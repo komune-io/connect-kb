@@ -86,7 +86,7 @@ def upload_file():
 @cross_origin()
 def ask():
     vectorstore = get_vectorestore()
-    response = api_tools.get_conversation_chain(vectorstore, request.json["metadata"], request.json["messages"])({'question': request.json["question"]})
+    response = api_tools.get_conversation_chain(vectorstore, {}, request.json["messages"])({'question': request.json["question"]})
     return Response(response['answer'], mimetype='text/plain', status=201)
 
 if __name__ == '__main__':
