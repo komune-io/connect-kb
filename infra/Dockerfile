@@ -8,8 +8,8 @@ RUN python -m pip install --upgrade pip
 
 RUN pip install -r requirements.txt
 
-COPY ./api.py .
-COPY ./api_tools.py .
+COPY ./src/api.py .
+COPY ./src/api_tools.py .
 
 ENV PYTHONUNBUFFERED 1
 
