@@ -1,6 +1,7 @@
 import os
-
 import pinecone
+import json
+from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 from langchain import PromptTemplate
 from langchain.chains import ConversationalRetrievalChain
@@ -35,7 +36,6 @@ Answer:"""
 QA_PROMPT = PromptTemplate(template=qa_template, input_variables=["question", "context"])
 
 
-
 def get_pdf_text(pdf_docs):
     text = ""
     pdf_reader = PdfReader(pdf_docs)
@@ -45,6 +45,7 @@ def get_pdf_text(pdf_docs):
 
 
 def get_vectorstore():
+    load_dotenv()
     api_key = os.getenv('PINECONE_API_KEY')
     environment = os.getenv('PINECONE_ENVIRONMENT')
     index_name = os.getenv('PINECONE_INDEX_NAME')
@@ -79,7 +80,7 @@ def get_text_chunks(text):
 def get_conversation_chain(vectorstore, metadata_filter, messages):
     llm = ChatOpenAI(model_name='gpt-4', temperature=0)
     memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True)
-    memory.chat_memory = parse_chat_history(messages)
+    memory.chat_memory = parse_chat_history(messages, metadata_filter)
     conversation_chain = ConversationalRetrievalChain.from_llm(
         llm=llm,
         retriever=vectorstore.as_retriever(search_kwargs={'filter': metadata_filter}),
@@ -89,18 +90,19 @@ def get_conversation_chain(vectorstore, metadata_filter, messages):
     )
     return conversation_chain
 
-def parse_chat_history(messages):
+
+def parse_chat_history(messages, metadata):
     chat_history = ChatMessageHistory()
     for message in messages:
         if message["type"] == "HUMAN":
             chat_history.add_message(HumanMessage(
                 content=message["content"],
-                additional_kwargs=message["additional_kwargs"]
+                additional_kwargs={"additional_kwargs": metadata}
             ))
         if message["type"] == "AI":
             chat_history.add_message(AIMessage(
                 content=message["content"],
-                additional_kwargs=message["additional_kwargs"]
+                additional_kwargs={"additional_kwargs": metadata}
             ))
 
     return chat_history

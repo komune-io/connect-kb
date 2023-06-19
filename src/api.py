@@ -1,28 +1,13 @@
 import json
 from io import BytesIO
-from dotenv import load_dotenv
-from flask import Flask, flash, request, redirect, Response, g
+from flask import Flask, flash, request, redirect, Response
 from waitress import serve
 import api_tools
 from flask_cors import CORS, cross_origin
 
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif'}
-
 app = Flask(__name__)
 CORS(app)
-
-
-def get_vectorestore():
-    if 'vectorestore' not in g:
-        g.vectorestore = api_tools.get_vectorstore()
-
-    return g.vectorestore
-
-
-@app.teardown_appcontext
-def teardown_vectorestore(_):
-    g.pop('vectorestore', None)
-
 
 def allowed_file(filename):
     return '.' in filename and \
@@ -56,8 +41,6 @@ def upload_file():
             # filename = secure_filename(file.filename) # get filename
             file_content = BytesIO(file.read())
 
-            vectorstore = get_vectorestore()
-
             raw_text = api_tools.get_pdf_text(file_content)
 
             # get the text chunks
@@ -69,7 +52,7 @@ def upload_file():
                 metadata.append(file_metadata.copy())
             vectorstore.add_texts(text_chunks, metadata)
 
-            return Response("Ok.", mimetype='text/plain', status=201)
+            return Response("Ok.", mimetype='text/plain', status=200)
             # return redirect(url_for('download_file', name=filename))
     return '''
     <!doctype html>
@@ -85,10 +68,17 @@ def upload_file():
 @app.route('/ask', methods=['POST'])
 @cross_origin()
 def ask():
-    vectorstore = get_vectorestore()
-    response = api_tools.get_conversation_chain(vectorstore, {}, request.json["messages"])({'question': request.json["question"]})
-    return Response(response['answer'], mimetype='text/plain', status=201)
+    if 'metadata' in request.json:
+        metadata = request.json["metadata"]
+    else:
+        metadata = {}
+
+    response = api_tools.get_conversation_chain(vectorstore, metadata, request.json["messages"])(
+        {'question': request.json["question"]})
+    return Response(response['answer'], mimetype='text/plain', status=200)
+
 
 if __name__ == '__main__':
-    load_dotenv()
     serve(app, host="0.0.0.0", port=9999)
+
+vectorstore = api_tools.get_vectorstore()
