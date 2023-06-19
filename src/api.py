@@ -78,7 +78,7 @@ def ask():
     return Response(response['answer'], mimetype='text/plain', status=200)
 
 
+vectorstore = api_tools.get_vectorstore()
+
 if __name__ == '__main__':
     serve(app, host="0.0.0.0", port=9999)
-
-vectorstore = api_tools.get_vectorstore()
