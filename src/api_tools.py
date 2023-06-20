@@ -35,6 +35,15 @@ Question: {question}
 Answer:"""
 QA_PROMPT = PromptTemplate(template=qa_template, input_variables=["question", "context"])
 
+def get_model_name():
+    load_dotenv()
+    model_name = os.getenv('OPENAI_MODEL_NAME')
+    if model_name is None:
+        model_name = 'gpt-3.5-turbo'
+
+    print(model_name)
+
+    return model_name
 
 def get_pdf_text(pdf_docs):
     text = ""
@@ -78,7 +87,8 @@ def get_text_chunks(text):
 
 
 def get_conversation_chain(vectorstore, metadata_filter, messages):
-    llm = ChatOpenAI(model_name='gpt-4', temperature=0)
+    model_name = get_model_name()
+    llm = ChatOpenAI(model_name=model_name, temperature=0)
     memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True)
     memory.chat_memory = parse_chat_history(messages, metadata_filter)
     conversation_chain = ConversationalRetrievalChain.from_llm(
