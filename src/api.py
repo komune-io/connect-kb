@@ -9,6 +9,7 @@ ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif'}
 app = Flask(__name__)
 CORS(app)
 
+
 def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -24,10 +25,9 @@ def upload_file():
             return redirect(request.url)
         file = request.files['file']
 
+        file_metadata = {"source": file.filename}
         if 'metadata' in request.form:
-            file_metadata = json.loads(request.form['metadata'])
-        else:
-            file_metadata = {}
+            file_metadata.update(json.loads(request.form['metadata']))
 
         # If the user does not select a file, the browser submits an
         # empty file without a filename.
@@ -51,6 +51,7 @@ def upload_file():
             for _ in text_chunks:
                 metadata.append(file_metadata.copy())
             vectorstore.add_texts(text_chunks, metadata)
+            vectorstore.persist()
 
             return Response("Ok.", mimetype='text/plain', status=200)
             # return redirect(url_for('download_file', name=filename))
@@ -68,12 +69,21 @@ def upload_file():
 @app.route('/ask', methods=['POST'])
 @cross_origin()
 def ask():
+    metadata_filter = {}
     if 'metadata' in request.json:
         metadata = request.json["metadata"]
-    else:
-        metadata = {}
+        if 'targeted_files' in metadata:
+            filenames = metadata['targeted_files']
+            if len(filenames) == 1:
+                metadata_filter = {"filter": {"source": filenames[0]}}
+            elif len(filenames) > 1:
+                sources = []
+                for filename in filenames:
+                    sources.append({"source": filename})
+                metadata_filter = {"filter": {"$or": sources}}
 
-    response = api_tools.get_conversation_chain(vectorstore, metadata, request.json["messages"])(
+    print("metadata_filter:", metadata_filter)
+    response = api_tools.get_conversation_chain(vectorstore, metadata_filter, request.json["messages"])(
         {'question': request.json["question"]})
     return Response(response['answer'], mimetype='text/plain', status=200)
 

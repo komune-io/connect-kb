@@ -1,8 +1,7 @@
 import os
-import pinecone
-import json
-from dotenv import load_dotenv
+
 from PyPDF2 import PdfReader
+from dotenv import load_dotenv
 from langchain import PromptTemplate
 from langchain.chains import ConversationalRetrievalChain
 from langchain.chat_models import ChatOpenAI
@@ -10,7 +9,7 @@ from langchain.embeddings import OpenAIEmbeddings
 from langchain.memory import ConversationBufferMemory, ChatMessageHistory
 from langchain.schema import HumanMessage, AIMessage
 from langchain.text_splitter import CharacterTextSplitter
-from langchain.vectorstores import Pinecone
+from langchain.vectorstores import Chroma
 
 condense_question_template = """
 Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question.
@@ -35,6 +34,7 @@ Question: {question}
 Answer:"""
 QA_PROMPT = PromptTemplate(template=qa_template, input_variables=["question", "context"])
 
+
 def get_model_name():
     load_dotenv()
     model_name = os.getenv('OPENAI_MODEL_NAME')
@@ -44,6 +44,7 @@ def get_model_name():
     print(model_name)
 
     return model_name
+
 
 def get_pdf_text(pdf_docs):
     text = ""
@@ -55,24 +56,12 @@ def get_pdf_text(pdf_docs):
 
 def get_vectorstore():
     load_dotenv()
-    api_key = os.getenv('PINECONE_API_KEY')
-    environment = os.getenv('PINECONE_ENVIRONMENT')
-    index_name = os.getenv('PINECONE_INDEX_NAME')
+    persist_directory = os.getenv('CHROMADB_PERSIST_DIRECTORY')
 
-    pinecone.init(
-        api_key=api_key,
-        environment=environment
+    return Chroma(
+        persist_directory=persist_directory,
+        embedding_function=OpenAIEmbeddings()
     )
-
-    print(index_name)
-
-    # pinecone.delete_index(index_name)
-
-    if index_name not in pinecone.list_indexes():
-        pinecone.create_index(index_name, dimension=1536, metric='cosine')
-        print('Created index ' + index_name)
-
-    return Pinecone.from_existing_index(index_name, OpenAIEmbeddings())
 
 
 def get_text_chunks(text):
@@ -86,14 +75,14 @@ def get_text_chunks(text):
     return chunks
 
 
-def get_conversation_chain(vectorstore, metadata_filter, messages):
+def get_conversation_chain(vectorstore: Chroma, metadata_filter, messages):
     model_name = get_model_name()
     llm = ChatOpenAI(model_name=model_name, temperature=0)
     memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True)
     memory.chat_memory = parse_chat_history(messages, metadata_filter)
     conversation_chain = ConversationalRetrievalChain.from_llm(
         llm=llm,
-        retriever=vectorstore.as_retriever(search_kwargs={'filter': metadata_filter}),
+        retriever=vectorstore.as_retriever(search_kwargs=metadata_filter),
         memory=memory,
         condense_question_prompt=CONDENSE_QUESTION_PROMPT,
         combine_docs_chain_kwargs={"prompt": QA_PROMPT}
@@ -114,5 +103,4 @@ def parse_chat_history(messages, metadata):
                 content=message["content"],
                 additional_kwargs={"additional_kwargs": metadata}
             ))
-
     return chat_history
