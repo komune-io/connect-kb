@@ -1,4 +1,6 @@
-FROM python:3.9.17-slim
+FROM python:3.9.17-slim-bullseye
+
+RUN apt-get update --fix-missing && apt-get install -y --fix-missing build-essential
 
 WORKDIR /code
 
@@ -10,6 +12,8 @@ RUN pip install -r requirements.txt
 
 COPY ./src/api.py .
 COPY ./src/api_tools.py .
+
+RUN mkdir /chroma
 
 ENV PYTHONUNBUFFERED 1
 
