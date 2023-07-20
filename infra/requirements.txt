@@ -10,6 +10,7 @@ python-dotenv==1.0.0
 openai==0.27.6
 #faiss-cpu==1.7.4
 #pinecone-client==2.2.2
+chroma-hnswlib==0.7.1
 chromadb
 numpy
 altair==4

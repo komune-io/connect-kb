@@ -1,4 +1,4 @@
-FROM python:3.11.4-slim-bullseye
+FROM python:3.10-slim-bookworm
 
 RUN apt-get update --fix-missing && apt-get install -y --fix-missing build-essential
 
