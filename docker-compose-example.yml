@@ -1,0 +1,17 @@
+version: "3.7"
+
+services:
+  kb-api:
+    container_name: kb-api
+    image: smartbcity/chat-impact:latest
+    ports:
+      - 9999:9999
+    environment:
+      - OPENAI_API_KEY=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
+      - PINECONE_API_KEY=d1cc96bb-2d3a-42d2-a49d-89929ffa33b1
+      - PINECONE_ENVIRONMENT=us-central1-gcp
+      - PINECONE_INDEX_NAME=chat-impact
+      - OPENAI_MODEL_NAME=gpt-3.5-turbo
+      - CHROMADB_PERSIST_DIRECTORY=/chroma
+    volumes:
+      - ./chroma:/chroma
