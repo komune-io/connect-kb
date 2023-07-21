@@ -2,8 +2,8 @@ FROM python:3.10-slim-bookworm as builder
 
 #RUN apt-get update -qq
 #RUN apt-get install python3.10 python3-pip -y --no-install-recommends && rm -rf /var/lib/apt/lists_/*
-RUN apt-get clean
-RUN apt-get upgrade
+RUN apt-get install debian-archive-keyring
+RUN apt-key update
 RUN apt-get update --fix-missing && apt-get install -y --fix-missing build-essential
 
 RUN mkdir /install
