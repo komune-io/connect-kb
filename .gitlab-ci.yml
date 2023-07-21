@@ -1,7 +1,7 @@
 include:
   - project: 'framework/fixers/cicd'
     file: 'fixers/.gitlab-ci-base.yml'
-    ref: 'jdk17'
+    ref: 'test'
   - project: 'framework/fixers/cicd'
     file: 'fixers/.gitlab-ci-docker.yml'
-    ref: 'jdk17'
+    ref: 'test'
