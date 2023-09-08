@@ -1,9 +1,11 @@
 import json
 from io import BytesIO
+
 from flask import Flask, flash, request, redirect, Response
-from waitress import serve
-import api_tools
 from flask_cors import CORS, cross_origin
+from waitress import serve
+
+import api_tools
 
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif'}
 app = Flask(__name__)
@@ -23,7 +25,18 @@ def upload_file():
         if 'file' not in request.files:
             flash('No file part')
             return redirect(request.url)
+
         file = request.files['file']
+        file_trace = []
+        file_status = 500
+
+        file_trace.append(file.filename)
+
+        collection = vectorstore._collection
+        existing_chunks_len = len(collection.get(where={"source": file.filename})['documents'])
+        if existing_chunks_len > 0:
+            collection.delete(where={"source": file.filename})
+            file_trace.append(str(existing_chunks_len) + " existing chunks deleted")
 
         file_metadata = {"source": file.filename}
         if 'metadata' in request.form:
@@ -51,10 +64,15 @@ def upload_file():
             for _ in text_chunks:
                 metadata.append(file_metadata.copy())
             vectorstore.add_texts(text_chunks, metadata)
+            file_trace.append(str(len(text_chunks)) + " chunks vectorized")
             vectorstore.persist()
+            file_status = 200
+        else:
+            file_trace.append("file not allowed")
+            file_status = 400
 
-            return Response("Ok.", mimetype='text/plain', status=200)
-            # return redirect(url_for('download_file', name=filename))
+        print(file_trace)
+        return Response(str(file_trace), mimetype='text/plain', status=file_status)
     return '''
     <!doctype html>
     <title>Upload new File</title>
