@@ -27,31 +27,34 @@ def upload_file():
             return redirect(request.url)
 
         file = request.files['file']
+
+        # workaround: flask request.files['files'].filename fail on spaces
+        filename = ''.join(str(request.files['file'].headers).split("filename=")[1].split("\r")[0]).replace('"', '')
+
         file_trace = []
         file_status = 500
 
-        file_trace.append(file.filename)
+        file_trace.append(filename)
 
         collection = vectorstore._collection
-        existing_chunks_len = len(collection.get(where={"source": file.filename})['documents'])
+        existing_chunks_len = len(collection.get(where={"source": filename})['documents'])
         if existing_chunks_len > 0:
-            collection.delete(where={"source": file.filename})
+            collection.delete(where={"source": filename})
             file_trace.append(str(existing_chunks_len) + " existing chunks deleted")
 
-        file_metadata = {"source": file.filename}
+        file_metadata = {"source": filename}
         if 'metadata' in request.form:
             file_metadata.update(json.loads(request.form['metadata']))
 
         # If the user does not select a file, the browser submits an
         # empty file without a filename.
-        if file.filename == '':
+        if filename == '':
             flash('No selected file')
             return redirect(request.url)
 
-        if file and allowed_file(file.filename):
+        if file and allowed_file(filename):
             print("file found")
 
-            # filename = secure_filename(file.filename) # get filename
             file_content = BytesIO(file.read())
 
             raw_text = api_tools.get_pdf_text(file_content)
