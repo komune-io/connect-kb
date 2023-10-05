@@ -91,6 +91,11 @@ class Requirement(BaseModel):
         description="Human-readable short and concise name of the requirement. It should summarize the description.",
         example="High Clouds Altitude"
     )
+    kind: str = Field(
+        default="CRITERION",
+        title="kind",
+        description="Should always be 'CRITERION'"
+    )
     description: str = Field(
         default=...,
         title="description",
@@ -100,12 +105,17 @@ class Requirement(BaseModel):
     hasRequirement: List[str] = Field(
         default=[],
         title="hasRequirement",
-        description="Identifiers of the sub-requirements that must be fulfilled for the requirement to be validated.",
+        description="Identifiers of the sub-requirements that must be fulfilled for the requirement to be validated. This can be used to split a complex requirements into multiple simpler ones.",
     )
     hasConcepts: List[str] = Field(
         default=...,
         title="hasConcepts",
         description="Identifiers of the information concepts used by the requirement",
+    )
+    status: str = Field(
+        default="CREATED",
+        title="status",
+        description="Must always be 'CREATED'"
     )
     source: str = Field(
         default=...,
@@ -144,6 +154,11 @@ class InformationConcept(BaseModel):
         title="question",
         description="Question to ask the user that will be tasked with fill in this information in a form",
         example="What is the altitude of the high clouds?"
+    )
+    status: str = Field(
+        default="EXISTS",
+        title="status",
+        description="Must always be 'EXISTS'"
     )
     source: str = Field(
         default=...,
@@ -187,7 +202,7 @@ class DataUnit(BaseModel):
     notation: str = Field(
         default="",
         title="notation",
-        description="The short notation for this data unit, if applicable",
+        description="The short notation for this data unit, if applicable (e.g. 'm' for 'meter', 'kg' for 'kilogram', etc)",
         example="m"
     )
     type: DataUnitType = Field(
@@ -195,6 +210,11 @@ class DataUnit(BaseModel):
         title="type",
         description="The type of data used for this data unit",
         example="NUMBER"
+    )
+    status: str = Field(
+        default="EXISTS",
+        title="status",
+        description="Must always be 'EXISTS'"
     )
 
 
@@ -204,11 +224,11 @@ class Document(BaseModel):
         title="name",
         description="Name of the document"
     )
-    pages: List[str] = Field(
-        default=...,
-        title="pages",
-        description="available information about each page of the document"
-    )
+    # pages: List[str] = Field(
+    #     default=...,
+    #     title="pages",
+    #     description="available information about each page of the document"
+    # )
 
 
 class CCCEV(BaseModel):
@@ -227,7 +247,7 @@ class CCCEV(BaseModel):
         title="requirements",
         description=DEFINITION_REQUIREMENT
     )
-    document: str = Field(
+    document: Document = Field(
         default=...,
         title="document",
         description="The source document from which the other entities have been extracted"
@@ -237,19 +257,21 @@ class CCCEV(BaseModel):
 CccevParser = PydanticOutputParser(pydantic_object=CCCEV)
 
 
-PROMPT_CCCEV_TASK = """read the given unstructured data, and list all requirements that must be met as well as the information concepts they use.
+PROMPT_CCCEV_TASK = """read the given input and parse it.
+The input data will contain a list of pre-filtered requirements, so you should extract every bit of information you can from it.
+All requirements listed in the input should be present in the output.
 Additional details: {detailed_task}
 
 {format_instructions}
 
-Unstructured data: {unstructured_data}"""
+Input: {unstructured_data}"""
 
 PROMPT_CCCEV_PARSER = f"""
 You are an expert in the specifications CCCEV (which will be described below).
 Your task is to {PROMPT_CCCEV_TASK}
     """
 
-PROMPT_CCCEV_VERIFIER = f"""
+PROMPT_CCCEV_VERIFIER_BASE = f"""
 You are an expert in the specifications CCCEV (which will be described below).
 Your task is to verify the work of one of your fellow experts.
 Here was the task of the other expert:
@@ -260,18 +282,22 @@ And here is the produced result:
 
 If you identify some points of improvements, apply them and return a new version of the result. 
 Points of improvements can include but are not limited to:
+  - all requirements in the input are represented in the result
   - relevance of the data unit and information concepts against the requirements that use them
   - the description of a requirement makes it clear that it is a requirement (with words such as "must" for example)
   - there are no unused or duplicated information concepts or data units
-  - all requirements in the unstructured data are represented in the result
   - the data units are all context-agnostic, whereas the information concepts should be put in context
   - each information concept uses only one data unit
   - any other improvements you can find
-
+    """
+PROMPT_CCCEV_VERIFIER = f"""{PROMPT_CCCEV_VERIFIER_BASE}
+The final answer should be the resulting json, and only the json without further formatting (i.e. do NOT wrap with ```json ```)
+"""
+PROMPT_CCCEV_VERIFIER_VERBOSE = f"""{PROMPT_CCCEV_VERIFIER_BASE}
 The final answer should be a json, and only a json without further formatting (i.e. do NOT wrap with ```json ```) with:
   - `improvements` that is a list of the improvements points you found
   - `cccev` that is the final improved result
-    """
+"""
 
 
 class CccevParserTool(BaseTool):
@@ -294,32 +320,11 @@ class CccevParserTool(BaseTool):
             ),
             verbose=True
         )
-        generated_cccev = chain.run({
+        return chain.run({
             "detailed_task": detailed_task,
             "format_instructions": CccevParser.get_format_instructions(),
             "unstructured_data": unstructured_data
         })
-
-        return CccevVerifierTool(self.llm).run({
-            "detailed_task": detailed_task,
-            "unstructured_data": unstructured_data,
-            "generated_cccev": generated_cccev
-        })
-
-        # chain = LLMChain(
-        #     llm=self.llm,
-        #     prompt=PromptTemplate(
-        #         template=PROMPT_CCCEV_VERIFIER,
-        #         input_variables=["detailed_task", "format_instructions", "unstructured_data", "generated_cccev"]
-        #     ),
-        #     verbose=True
-        # )
-        # return chain.run({
-        #     "detailed_task": detailed_task,
-        #     "format_instructions": CccevParser.get_format_instructions(),
-        #     "unstructured_data": unstructured_data,
-        #     "generated_cccev": generated_cccev
-        # })
 
 
 class CccevVerifierTool(BaseTool):
@@ -332,11 +337,16 @@ class CccevVerifierTool(BaseTool):
         super().__init__(**data)
         self.llm = llm
 
-    def _run(self, generated_cccev: str, unstructured_data: str, detailed_task: str) -> str:
+    def _run(self, generated_cccev: str, unstructured_data: str, detailed_task: str, verbose: bool) -> str:
+        if verbose:
+            prompt = PROMPT_CCCEV_VERIFIER_VERBOSE
+        else:
+            prompt = PROMPT_CCCEV_VERIFIER
+
         chain = LLMChain(
             llm=self.llm,
             prompt=PromptTemplate(
-                template=PROMPT_CCCEV_VERIFIER,
+                template=prompt,
                 input_variables=["detailed_task", "format_instructions", "unstructured_data", "generated_cccev"]
             ),
             verbose=True
@@ -349,4 +359,8 @@ class CccevVerifierTool(BaseTool):
         })
         print(result_str)
         result = json.loads(result_str)
-        return json.dumps(result["cccev"])
+
+        if verbose:
+            return json.dumps(result["cccev"])
+        else:
+            return json.dumps(result)

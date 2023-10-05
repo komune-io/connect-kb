@@ -30,8 +30,14 @@ class Json2GraphTool(BaseTool):
 
         chain.run(f"""
 You are an expert in building knowledge graphs.
-Your task is to transform the given json into a graph and save it.
-The json contains Requirements, Information Concepts, Data Units and a Document. Each entity should be a node, and you should map the relationships between them
+Your task is to transform the given json into a graph and save it. All information defined in the json must be saved in the graph.
+The json contains Requirements, Information Concepts, Data Units and a Document. Each entity should be a node, and you should map all the relationships between them.
+Here is a list of relationship names to use where you can:
+- HAS_CONCEPT (from Requirement to Information Concept)
+- HAS_REQUIREMENT (from Requirement to Requirement)
+- HAS_UNIT (from Information Concept to Data Unit)
+- HAS_DOCUMENT (from any node to Document)
+You are allowed to create new ones if none of these match your needs.
 Json: {json_data}
             """)
         return "Graph saved in Neo4J"
