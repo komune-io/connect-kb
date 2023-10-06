@@ -1,3 +1,5 @@
+import uuid
+
 from langchain import LLMChain
 from langchain.chains import GraphCypherQAChain
 from langchain.chains.graph_qa.prompts import CYPHER_GENERATION_PROMPT
@@ -7,6 +9,8 @@ from langchain.schema.embeddings import Embeddings
 from langchain.tools import BaseTool
 from langchain.document_loaders import PyPDFium2Loader as PdfReader
 import aspose.words as aw
+
+from tool_cccev import CCCEV
 
 
 class Json2GraphTool(BaseTool):
@@ -58,9 +62,9 @@ class QuestionGraphTool(BaseTool):
     def _run(self, question: str):
         question_embedding = self.embedder.embed_query(question)
         answer_context_parts = self.graph.query("""
-            CALL db.index.vector.queryNodes('embeddingIndex', 50, $question_embedding) 
+            CALL db.index.vector.queryNodes('embeddedIndex', 20, $question_embedding) 
             YIELD node, score
-            RETURN node.text AS text, score
+            RETURN node.embedText AS text, score
         """, {"question_embedding": question_embedding})
 
         answer_context = '\n'.join(map(lambda context_part: context_part["text"], answer_context_parts))
@@ -81,7 +85,7 @@ class QueryGraphTool(BaseTool):
 
     def _run(self, question: str):
         chain = LLMChain(llm=self.llm, prompt=CYPHER_GENERATION_PROMPT)
-        prompt = f"""Retrieve as much details as you can to answer the following question, but do not ever fetch the 'Embedding' labeled nodes: {question}"""
+        prompt = f"""Retrieve as much details as you can to answer the following question, but do not ever return the vector fields: {question}"""
         query = chain.run(
             {"question": prompt, "schema": self.graph.get_schema}
         )
@@ -100,6 +104,55 @@ class QueryGraphTool(BaseTool):
 # The final answer must contain the structured data retrieved from the graph.
 # Question: {question}
 #             """)
+
+
+def cccev2graph(cccev: CCCEV):
+    doc = "doc"
+    graph = f"""CREATE ({doc}:Document {{id: "{uuid.uuid4()}", name: "{cccev.document.name}"}})\n"""
+
+    for unit in cccev.dataUnits:
+        graph += f"""CREATE ({unit.identifier}:DataUnit {{
+            id: "{uuid.uuid4()}",
+            identifier: "{unit.identifier}",
+            name: "{unit.name}",
+            description: "{unit.description}",
+            type: "{unit.type}",
+            status: "EXISTS"
+        }})
+        """
+
+    for concept in cccev.informationConcepts:
+        graph += f"""CREATE ({concept.identifier}:InformationConcept {{
+            id: "{uuid.uuid4()}",
+            identifier: "{concept.identifier}",
+            name: "{concept.name}",
+            description: "{concept.description}",
+            question: "{concept.question}",
+            status: "EXISTS",
+            source: {concept.source}
+        }})
+        CREATE ({concept.identifier})-[:HAS_UNIT]->({concept.unit})
+        CREATE ({concept.identifier})-[:HAS_DOCUMENT]->({doc})
+        """
+
+    for requirement in cccev.requirements:
+        graph += f"""CREATE ({requirement.identifier}:Requirement {{
+            id: "{uuid.uuid4()}",
+            identifier: "{requirement.identifier}",
+            name: "{requirement.name}",
+            description: "{requirement.description}",
+            kind: "CRITERION",
+            status: "CREATED",
+            source: {requirement.source}
+        }})
+        CREATE ({requirement.identifier})-[:HAS_DOCUMENT]->({doc})
+        """
+        for concept in requirement.hasConcepts:
+            graph += f"""CREATE ({requirement.identifier})-[:HAS_CONCEPT]->({concept})
+            """
+
+    return graph
+
 
 
 # INIT_GRAPH = """

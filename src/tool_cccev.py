@@ -91,11 +91,6 @@ class Requirement(BaseModel):
         description="Human-readable short and concise name of the requirement. It should summarize the description.",
         example="High Clouds Altitude"
     )
-    kind: str = Field(
-        default="CRITERION",
-        title="kind",
-        description="Should always be 'CRITERION'"
-    )
     description: str = Field(
         default=...,
         title="description",
@@ -112,15 +107,10 @@ class Requirement(BaseModel):
         title="hasConcepts",
         description="Identifiers of the information concepts used by the requirement",
     )
-    status: str = Field(
-        default="CREATED",
-        title="status",
-        description="Must always be 'CREATED'"
-    )
-    source: str = Field(
+    source: int = Field(
         default=...,
         title="source",
-        description="The source from which information about this information concept has been generated. It should at least contain the name of the document and the page number."
+        description="The page number from which information about this requirement has been generated."
     )
 
 
@@ -155,15 +145,10 @@ class InformationConcept(BaseModel):
         description="Question to ask the user that will be tasked with fill in this information in a form",
         example="What is the altitude of the high clouds?"
     )
-    status: str = Field(
-        default="EXISTS",
-        title="status",
-        description="Must always be 'EXISTS'"
-    )
-    source: str = Field(
+    source: int = Field(
         default=...,
         title="source",
-        description="The source from which information about this information concept has been generated. It should at least contain the name of the document and the page number."
+        description="The page number from which information about this information concept has been generated."
     )
 
     @validator("question")
@@ -210,11 +195,6 @@ class DataUnit(BaseModel):
         title="type",
         description="The type of data used for this data unit",
         example="NUMBER"
-    )
-    status: str = Field(
-        default="EXISTS",
-        title="status",
-        description="Must always be 'EXISTS'"
     )
 
 
@@ -264,6 +244,8 @@ Additional details: {detailed_task}
 
 {format_instructions}
 
+All identifiers must be prefixed by "{session_id}"
+
 Input: {unstructured_data}"""
 
 PROMPT_CCCEV_PARSER = f"""
@@ -310,20 +292,21 @@ class CccevParserTool(BaseTool):
         super().__init__(**data)
         self.llm = llm
 
-    def _run(self, unstructured_data: str, detailed_task: str) -> str:
+    def _run(self, unstructured_data: str, detailed_task: str, session_id: str) -> str:
 
         chain = LLMChain(
             llm=self.llm,
             prompt=PromptTemplate(
                 template=PROMPT_CCCEV_PARSER,
-                input_variables=["detailed_task", "format_instructions", "unstructured_data"]
+                input_variables=["detailed_task", "format_instructions", "unstructured_data", "session_id"]
             ),
             verbose=True
         )
         return chain.run({
             "detailed_task": detailed_task,
             "format_instructions": CccevParser.get_format_instructions(),
-            "unstructured_data": unstructured_data
+            "unstructured_data": unstructured_data,
+            "session_id": session_id
         })
 
 
@@ -337,7 +320,7 @@ class CccevVerifierTool(BaseTool):
         super().__init__(**data)
         self.llm = llm
 
-    def _run(self, generated_cccev: str, unstructured_data: str, detailed_task: str, verbose: bool) -> str:
+    def _run(self, generated_cccev: str, unstructured_data: str, detailed_task: str, session_id: str, verbose: bool) -> str:
         if verbose:
             prompt = PROMPT_CCCEV_VERIFIER_VERBOSE
         else:
@@ -347,7 +330,7 @@ class CccevVerifierTool(BaseTool):
             llm=self.llm,
             prompt=PromptTemplate(
                 template=prompt,
-                input_variables=["detailed_task", "format_instructions", "unstructured_data", "generated_cccev"]
+                input_variables=["detailed_task", "format_instructions", "unstructured_data", "session_id", "generated_cccev"]
             ),
             verbose=True
         )
@@ -355,6 +338,7 @@ class CccevVerifierTool(BaseTool):
             "detailed_task": detailed_task,
             "format_instructions": CccevParser.get_format_instructions(),
             "unstructured_data": unstructured_data,
+            "session_id": session_id,
             "generated_cccev": generated_cccev
         })
         print(result_str)

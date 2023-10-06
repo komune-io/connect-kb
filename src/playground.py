@@ -3,22 +3,20 @@ import os
 import uuid
 
 from dotenv import load_dotenv
-from langchain import PromptTemplate, LLMChain, ConversationChain
 from langchain.agents import AgentType
 from langchain.agents import initialize_agent
 from langchain.agents.agent_toolkits import FileManagementToolkit
-from langchain.chains import LLMMathChain, GraphCypherQAChain
+from langchain.chains import LLMMathChain
 from langchain.chat_models import ChatOpenAI, ChatAnthropic
 from langchain.document_loaders import PyPDFium2Loader as PdfReader
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.graphs import Neo4jGraph
-from langchain.memory import ConversationEntityMemory
-from langchain.memory.prompt import ENTITY_MEMORY_CONVERSATION_TEMPLATE
-from langchain.tools import WriteFileTool
+from langchain.tools import WriteFileTool, ReadFileTool
 
-from tool_graph import Json2GraphTool, INIT_GRAPH, QuestionGraphTool, QueryGraphTool
-from tool_cccev import CccevParser, CccevParserTool, CccevVerifierTool, CCCEV
-from tool_pdf2txt import Pdf2TxtTool, Pdf2MdTool
+from convert_pdf import convert_pdf
+from tool_cccev import CccevParserTool, CccevVerifierTool
+from tool_graph import Json2GraphTool, QuestionGraphTool, QueryGraphTool, cccev2graph
+from tool_pdf2txt import Pdf2TxtTool
 
 DIR_DATA = "data"
 DIR_OUTPUT = f"{DIR_DATA}/output"
@@ -26,6 +24,7 @@ DIR_INPUT = f"{DIR_DATA}/input"
 
 FILE_CCP = "CCP-Book-R2-FINAL-26Jul23.pdf"
 FILE_VM003 = "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf"
+FILE_VM003_MD = "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.md"
 
 load_dotenv()
 GPT4 = ChatOpenAI(temperature=0, model_name="gpt-4")
@@ -37,27 +36,13 @@ GRAPH = Neo4jGraph(url="neo4j://localhost:7687", username="neo4j", password="sma
 EMBEDDER = OpenAIEmbeddings()
 
 
-def extract_json_from_text(text: str):
-    start_index = text.find("{")
-    end_index = text.rfind("}") + 1
-    extracted_json_str = text[start_index:end_index]
-    extracted_json = json.loads(extracted_json_str)
-    return extracted_json
+class Object(object):
+    def __init__(self, dict_):
+        self.__dict__.update(dict_)
 
 
-def save_file(output_dir: str, output_file: str, content: str, file_extension="txt", use_dump=False):
-    output_file_path = os.path.join(output_dir, output_file + '.' + file_extension)
-    if file_extension == 'txt':
-        with open(output_file_path, 'w') as file:
-            file.write(str(content))
-    else:
-        with open(output_file_path, 'w') as file:
-            if use_dump:
-                content = extract_json_from_text(content)
-                json.dump(content, file)
-            else:
-                file.write(str(content))
-    print(f"Data saved to '{output_file_path}'")
+def json2object(jsonStr: str):
+    return json.loads(jsonStr, object_hook=Object)
 
 
 def node_to_text(label: str, content: dict[str]) -> str:
@@ -93,70 +78,48 @@ def relationship_to_text(type: str, node_source: str, node_target: str) -> str:
     return f"{node_source} {type_txt} {node_target}"
 
 
-def init_graph():
-    # GRAPH.query(INIT_GRAPH)
-    # GRAPH.query("CALL db.index.vector.createNodeIndex('embeddingIndex', 'Embedding', 'vector', 1536, 'cosine')")
-    nodes = GRAPH.query("""
-        MATCH (n)
-        WHERE NOT (n)-[:HAS_EMBEDDING]->()
-        AND NOT 'Embedding' in labels(n)
-        RETURN n as content, labels(n) as label, id(n) as id
-    """)
-    for node in nodes:
-        node_id: int = node["id"]
-        node_label: str = node["label"][0]
-        node_content: dict[str] = node["content"]
-
-        relationships = GRAPH.query("""
+def embed_node(id: int, label: str, content: dict[str]):
+    relationships = GRAPH.query("""
             MATCH (n1)-[r]->(n2)
             WHERE id(n1) = $id
             AND type(r) <> 'HAS_EMBEDDING'
-            RETURN n1 as source, id(n1) as source_id, type(r) as type, n2 as target, id(n2) as target_id
-        """, {"id": node_id})
+            RETURN n1 as source, type(r) as type, n2 as target
+        """, {"id": id})
 
-        node_embedded_text = node_to_text(node_label, node_content)
-        node_embedding = EMBEDDER.embed_query(node_embedded_text)
-        GRAPH.query("""
-            CREATE (e: Embedding)
-            SET e.text=$embedded_text
+    embedded_text = node_to_text(label, content)
 
-            WITH e
-            CALL db.create.setVectorProperty(e, 'vector', $embedding)
-            YIELD node
+    for relationship in relationships:
+        r_type = relationship["type"]
+        r_source = relationship["source"]
+        r_target: dict[str] = relationship["target"]
+        embedded_text += f"""\n{relationship_to_text(
+            type=r_type,
+            node_source=r_source.get("identifier", r_source["name"]),
+            node_target=r_target.get("identifier", r_target["name"])
+        )}"""
 
-            WITH e
+    embedding = EMBEDDER.embed_query(embedded_text)
+
+    GRAPH.query(f"""
             MATCH (n)
-            WHERE id(n) = $id
-            CREATE (n)-[:HAS_EMBEDDING]->(e)
-            SET n.id = $uuid
-        """, {"embedded_text": node_embedded_text, "embedding": node_embedding, "id": node_id, "uuid": str(uuid.uuid4())})
+            WHERE id(n) = $node_id
+            CALL db.create.setVectorProperty(n, 'embedVector', $embedding)
+            YIELD node
+            SET n.embedText = $embedded_text
+            SET n:{label}:Embedded
+        """, {"node_id": id, 'embedding': embedding, 'embedded_text': embedded_text})
 
-        for relationship in relationships:
-            r_type = relationship["type"]
-            r_source = relationship["source"]
-            r_source_id = relationship["source_id"]
-            r_target: dict[str] = relationship["target"]
-            r_target_id = relationship["target_id"]
-            r_embedded_text = relationship_to_text(r_type, r_source.get("identifier", r_source["name"]), r_target.get("identifier", r_target["name"]))
-            r_embedding = EMBEDDER.embed_query(r_embedded_text)
-            GRAPH.query(f"""
-                CREATE (e: Embedding)
-                SET e.text=$embedded_text
 
-                WITH e
-                CALL db.create.setVectorProperty(e, 'vector', $embedding)
-                YIELD node
-
-                WITH e
-                MATCH (source)
-                WHERE id(source) = $source_id
-                CREATE (source)-[:HAS_EMBEDDING]->(e)
-
-                WITH e
-                MATCH (target)
-                WHERE id(target) = $target_id
-                CREATE (target)-[:HAS_EMBEDDING]->(e)
-            """, {"embedded_text": r_embedded_text, "embedding": r_embedding, "source_id": r_source_id, "target_id": r_target_id})
+def embed_graph():
+    # GRAPH.query(INIT_GRAPH)
+    # GRAPH.query("CALL db.index.vector.createNodeIndex('embeddedIndex', 'Embedded', 'embedVector', 1536, 'cosine')")
+    nodes = GRAPH.query("""
+        MATCH (n)
+        WHERE NOT 'Embedded' in labels(n)
+        RETURN n as content, labels(n) as labels, id(n) as id
+    """)
+    for node in nodes:
+        embed_node(id=node["id"], label=node["labels"][0], content=node["content"])
 
 
 def question_graph(question: str) -> str:
@@ -197,7 +160,7 @@ def question_graph(question: str) -> str:
 # cccev = """{"dataUnits": [{"identifier": "xsdString", "name": "XSDString", "description": "Any string of characters", "type": "STRING"}, {"identifier": "xsdBoolean", "name": "XSDBoolean", "description": "True or false", "type": "BOOLEAN"}, {"identifier": "xsdDate", "name": "XSDDate", "description": "A date", "type": "DATE"}], "informationConcepts": [{"identifier": "forestManagementPractices", "name": "Forest Management Practices", "description": "The practices used to manage the forest, such as harvesting techniques", "unit": "xsdString", "question": "What are the forest management practices used?", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf page 5"}, {"identifier": "projectAreaCondition", "name": "Project Area Condition", "description": "The condition that the project area must meet prior to the first verification event", "unit": "xsdString", "question": "What condition does the project area meet?", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf page 5"}, {"identifier": "projectLength", "name": "Project Length", "description": "The minimum length of the project as defined in the project description", "unit": "xsdDate", "question": "What is the minimum project length?", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf page 5"}, {"identifier": "fireControlMeasures", "name": "Fire Control Measures", "description": "The measures taken to control fire in the project area", "unit": "xsdString", "question": "What fire control measures are taken?", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf page 6"}, {"identifier": "leakagePrevention", "name": "Leakage Prevention", "description": "The measures taken to prevent leakage through activity shifting to other lands", "unit": "xsdBoolean", "question": "Are there measures to prevent leakage?", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf page 6"}, {"identifier": "projectStartDate", "name": "Project Start Date", "description": "The start date of the project", "unit": "xsdDate", "question": "What is the start date of the project?", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf page 5"}, {"identifier": "methodology", "name": "Methodology", "description": "The methodology used for the project", "unit": "xsdString", "question": "What methodology is used for the project?", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf page 4"}, {"identifier": "timberHarvesting", "name": "Timber Harvesting", "description": "Whether the forest is subject to timber harvesting in the baseline scenario", "unit": "xsdBoolean", "question": "Is the forest subject to timber harvesting in the baseline scenario?", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf page 5"}], "requirements": [{"identifier": "projectEligibility", "name": "Project Eligibility", "description": "The project must involve an extension in rotation age (ERA) and must not encompass managed peat forests. The project area must meet one of the specified conditions prior to the first verification event. The project must have a defined start date.", "hasRequirement": [], "hasConcepts": ["forestManagementPractices", "projectAreaCondition", "projectStartDate", "methodology", "timberHarvesting"], "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf page 5"}, {"identifier": "fireControl", "name": "Fire Control", "description": "If fire is used as part of forest management, fire control measures must be taken to ensure fire does not spread outside the project area.", "hasRequirement": [], "hasConcepts": ["fireControlMeasures"], "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf page 6"}, {"identifier": "leakagePrevention", "name": "Leakage Prevention", "description": "There must be no leakage through activity shifting to other lands owned or managed by project proponents outside the boundary of the project area.", "hasRequirement": [], "hasConcepts": ["leakagePrevention"], "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf page 6"}, {"identifier": "projectStartDate", "name": "Project Start Date", "description": "The project must have a defined start date.", "hasRequirement": [], "hasConcepts": ["projectStartDate"], "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf page 5"}], "document": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf"}"""
 
 
-def extract_cccev(input_file_path: str, resultCount: int, verbose: bool):
+def extract_cccev(input_file_path: str, result_count: int, verbose: bool):
     reader = PdfReader(input_file_path)
     pages = reader.load()
     unstructured_data = f"""
@@ -217,28 +180,33 @@ You must keep the sources metadata (such as document name and pages) for every i
 Text: {unstructured_data}"""
     summarized_text = LLM.predict(reader_prompt)
 
+    session_id = f"kb_{result_count}_"
+
     detailed_task = "extract the CCCEV entities that must be fulfilled for a project to be eligible to this methodology"
     cccev = CccevParserTool(LLM).run({
         "detailed_task": detailed_task,
         "unstructured_data": summarized_text,
+        "session_id": session_id
     })
 
     cccev_verified1 = CccevVerifierTool(LLM).run({
         "detailed_task": detailed_task,
         "unstructured_data": summarized_text,
         "generated_cccev": cccev,
-        "verbose": verbose
+        "verbose": verbose,
+        "session_id": session_id
     })
 
     cccev_verified = CccevVerifierTool(LLM).run({
         "detailed_task": detailed_task,
         "unstructured_data": summarized_text,
         "generated_cccev": cccev_verified1,
-        "verbose": verbose
+        "verbose": verbose,
+        "session_id": session_id
     })
 
     WriteFileTool().run({
-        "file_path": f"{DIR_OUTPUT}/result-cccev-parser-{resultCount}.json",
+        "file_path": f"{DIR_OUTPUT}/result-cccev-parser-{result_count}.json",
         "text": cccev_verified
     })
     return cccev_verified
@@ -384,12 +352,13 @@ Output Directory: {DIR_OUTPUT}
     # data="""VM0003, v1.3\r\nCONTENTS\r\n1 SOURCES ..............................................................................................................3\r\n2 SUMMARY DESCRIPTION OF THE METHODOLOGY ............................................3\r\n3 DEFINITIONS .........................................................................................................3\r\n4 APPLICABILITY CONDITIONS...............................................................................4\r\n5 PROJECT BOUNDARY ..........................................................................................5\r\n5.1 GHG Sources and Sinks.................................................................................................... 5\r\n5.2 Project Area and Eligibility of Land................................................................................. 6\r\n6 BASELINE SCENARIO ...........................................................................................7\r\n6.1 Selected Baseline Approach .......................................................................................... 7\r\n6.2 Preliminary Screening Based on the IFM Project Activity Start Date........................... 7\r\n6.3 Determination of Baseline Scenario ............................................................................... 7\r\n7 ADDITIONALITY..................................................................................................11\r\n8 QUANTIFICATION OF GHG EMISSION REDUCTIONS AND REMOVALS...........11\r\n8.1 Stratification..................................................................................................................... 11\r\n8.2 Baseline Net GHG Removals by Sinks........................................................................... 12\r\n8.3 Stock Changes in the Baseline...................................................................................... 14\r\n8.4 Baseline Emissions............................................................................................................ 15\r\n8.5 Project Net GHG Removals by Sinks............................................................................. 17\r\n8.6 Leakage........................................................................................................................... 34\r\n8.7 Summary of GHG Emission Reductions and/or Removals ......................................... 36\r\n9 MONITORING.....................................................................................................39\r\n9.1 Data and Parameters Available at Validation ........................................................... 39\r\n9.2 Data and Parameters Monitored ................................................................................. 49\r\n9.3 Description of the Monitoring Plan ............................................................................... 54\r\n10 REFERENCES .......................................................................................................56\r\nDOCUMENT HISTORY....................................................................................................59\r\nVM0003, v1.3\r\n4\r\nFirewood \r\nWood harvested and burned for personal use or limited sale as a heating fuel in the immediate \r\nvicinity\r\nGroup selection \r\nA variant of clear cut with groups of trees being left for wildlife habitat, wind firmness, soil \r\nretention or other silvicultural goals\r\nLogging slash \r\nBranches, other dead wood residues and foliage left on the forest floor after timber removal\r\nPatch cut \r\nA clear cut on a small area (less than one hectare) \r\nSanitation removal \r\nThe intentional removal of trees to prevent disease or correct a natural disturbance\r\nSeed tree \r\nA variant of clear cut with limited mature trees being left to provide seeds for regeneration\r\nTree \r\nA perennial woody plant with a diameter at breast height greater than 5 cm and a height \r\ngreater than 1.3 m\r\n4 APPLICABILITY CONDITIONS\r\nThis methodology applies to Improved Forest Management (IFM) project activities that involve \r\nan extension in rotation age (ERA).\r\nThis methodology is applicable under the following conditions:\r\n1) Forest management in both baseline and project scenarios involves harvesting \r\ntechniques such as clear cuts, patch cuts, seed trees, continuous thinning, or group \r\nselection practices.\r\n2) Forests which are not subject to timber harvesting, or managed without an objective for \r\nearning revenue through timber harvesting in the baseline scenario are not eligible \r\nunder this methodology.\r\n3) Prior to the first verification event, the project area must meet one of the following \r\nconditions: \r\na) Certified by Forest Stewardship Council (FSC); or \r\nb) Subject to an easement, or equivalent instrument, recorded against the deed of \r\nproperty that prohibits commercial harvesting for the duration of the crediting \r\nperiod unless later certified by FSC.\r\n4) Project proponents must define the minimum project length in the project description.\r\nVM0003, v1.3\r\n5\r\n5) The project does not encompass managed peat forests, and the proportion of wetlands \r\nis not expected to change as part of the project.\r\n6) Project proponents must have a projection of management practices in both with- and \r\nwithout-project scenarios.\r\n7) Where fire is used as part of forest management, fire control measures such as \r\ninstallation of firebreaks or back-burning must be taken to ensure fire does not spread \r\noutside the project area — that is, no biomass burning is permitted to occur beyond the \r\nproject area due to forest management activities.\r\n8) There must be no leakage through activity shifting to other lands owned or managed by \r\nproject proponents outside the boundary of the project area.\r\n5 PROJECT BOUNDARY\r\n5.1 GHG Sources and Sinks\r\nThe carbon pools included in or excluded from the project boundary are shown in Table 1. \r\nTable 1: Selected Carbon Pools\r\nCarbon Pools Selected? Justification/Explanation \r\nAbove-ground \r\nbiomass\r\nYes Major carbon pool subjected to the project activity\r\nBelow-ground \r\nbiomass\r\nYes Below-ground biomass stock is expected to increase due to \r\nimplementation of the IFM project activity. Below-ground \r\nbiomass subsequent to harvest is not assessed based on the \r\nconservative assumption of immediate emission.\r\nDead wood Conditional Dead wood stocks may be conservatively excluded unless the \r\nproject scenario produces greater levels of slash than the \r\nbaseline and slash is burned as part of forest management. \r\nWhere slash produced in the project scenario is left in the \r\nforest to become part of the dead wood pool, dead wood may \r\nbe conservatively excluded. Alternatively, project proponents \r\nmay elect to include the pool (where included, the pool must be \r\nestimated in both the baseline and with-project scenarios) as \r\nlong as the dead wood pool represents less than 50 percent of \r\ntotal carbon volume on the site in any given modeled year.\r\nLitter No Changes in the litter pool will be de minimis as a result of \r\nrotation extension."""
     # data="""VM0003, v1.3\r\n4\r\nFirewood \r\nWood harvested and burned for personal use or limited sale as a heating fuel in the immediate \r\nvicinity\r\nGroup selection \r\nA variant of clear cut with groups of trees being left for wildlife habitat, wind firmness, soil \r\nretention or other silvicultural goals\r\nLogging slash \r\nBranches, other dead wood residues and foliage left on the forest floor after timber removal\r\nPatch cut \r\nA clear cut on a small area (less than one hectare) \r\nSanitation removal \r\nThe intentional removal of trees to prevent disease or correct a natural disturbance\r\nSeed tree \r\nA variant of clear cut with limited mature trees being left to provide seeds for regeneration\r\nTree \r\nA perennial woody plant with a diameter at breast height greater than 5 cm and a height \r\ngreater than 1.3 m\r\n4 APPLICABILITY CONDITIONS\r\nThis methodology applies to Improved Forest Management (IFM) project activities that involve \r\nan extension in rotation age (ERA).\r\nThis methodology is applicable under the following conditions:\r\n1) Forest management in both baseline and project scenarios involves harvesting \r\ntechniques such as clear cuts, patch cuts, seed trees, continuous thinning, or group \r\nselection practices.\r\n2) Forests which are not subject to timber harvesting, or managed without an objective for \r\nearning revenue through timber harvesting in the baseline scenario are not eligible \r\nunder this methodology.\r\n3) Prior to the first verification event, the project area must meet one of the following \r\nconditions: \r\na) Certified by Forest Stewardship Council (FSC); or \r\nb) Subject to an easement, or equivalent instrument, recorded against the deed of \r\nproperty that prohibits commercial harvesting for the duration of the crediting \r\nperiod unless later certified by FSC.\r\n4) Project proponents must define the minimum project length in the project description.\r\nVM0003, v1.3\r\n5\r\n5) The project does not encompass managed peat forests, and the proportion of wetlands \r\nis not expected to change as part of the project.\r\n6) Project proponents must have a projection of management practices in both with- and \r\nwithout-project scenarios.\r\n7) Where fire is used as part of forest management, fire control measures such as \r\ninstallation of firebreaks or back-burning must be taken to ensure fire does not spread \r\noutside the project area — that is, no biomass burning is permitted to occur beyond the \r\nproject area due to forest management activities.\r\n8) There must be no leakage through activity shifting to other lands owned or managed by \r\nproject proponents outside the boundary of the project area.\r\n5 PROJECT BOUNDARY\r\n5.1 GHG Sources and Sinks\r\nThe carbon pools included in or excluded from the project boundary are shown in Table 1. \r\nTable 1: Selected Carbon Pools\r\nCarbon Pools Selected? Justification/Explanation \r\nAbove-ground \r\nbiomass\r\nYes Major carbon pool subjected to the project activity\r\nBelow-ground \r\nbiomass\r\nYes Below-ground biomass stock is expected to increase due to \r\nimplementation of the IFM project activity. Below-ground \r\nbiomass subsequent to harvest is not assessed based on the \r\nconservative assumption of immediate emission.\r\nDead wood Conditional Dead wood stocks may be conservatively excluded unless the \r\nproject scenario produces greater levels of slash than the \r\nbaseline and slash is burned as part of forest management. \r\nWhere slash produced in the project scenario is left in the \r\nforest to become part of the dead wood pool, dead wood may \r\nbe conservatively excluded. Alternatively, project proponents \r\nmay elect to include the pool (where included, the pool must be \r\nestimated in both the baseline and with-project scenarios) as \r\nlong as the dead wood pool represents less than 50 percent of \r\ntotal carbon volume on the site in any given modeled year.\r\nLitter No Changes in the litter pool will be de minimis as a result of \r\nrotation extension."""
 
-    iteration = 30
-    cccev = """{"dataUnits": [{"identifier": "xsdString", "name": "XSDString", "description": "Any string of characters", "type": "STRING", "status": "EXISTS"}, {"identifier": "xsdBoolean", "name": "XSDBoolean", "description": "True or false", "type": "BOOLEAN", "status": "EXISTS"}], "informationConcepts": [{"identifier": "forestManagementPractices", "name": "Forest Management Practices", "description": "The practices used to manage a forest", "unit": "xsdString", "question": "What are the forest management practices used?", "status": "EXISTS", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf, page 4"}, {"identifier": "projectActivity", "name": "Project Activity", "description": "The activity that the project involves", "unit": "xsdString", "question": "What activity does the project involve?", "status": "EXISTS", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf, page 5"}, {"identifier": "harvestingTechniques", "name": "Harvesting Techniques", "description": "The techniques used for harvesting in the forest", "unit": "xsdString", "question": "What harvesting techniques are used in the forest?", "status": "EXISTS", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf, page 5"}, {"identifier": "projectAreaCertification", "name": "Project Area Certification", "description": "The certification of the project area", "unit": "xsdString", "question": "What is the certification of the project area?", "status": "EXISTS", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf, page 5"}, {"identifier": "projectLength", "name": "Project Length", "description": "The minimum length of the project", "unit": "xsdString", "question": "What is the minimum length of the project?", "status": "EXISTS", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf, page 5"}, {"identifier": "managementPracticesProjection", "name": "Management Practices Projection", "description": "The projection of management practices in both with- and without-project scenarios", "unit": "xsdString", "question": "What is the projection of management practices in both with- and without-project scenarios?", "status": "EXISTS", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf, page 6"}, {"identifier": "fireControlMeasures", "name": "Fire Control Measures", "description": "The measures taken to control fire in the forest", "unit": "xsdString", "question": "What measures are taken to control fire in the forest?", "status": "EXISTS", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf, page 6"}, {"identifier": "leakagePrevention", "name": "Leakage Prevention", "description": "The measures taken to prevent leakage to other lands", "unit": "xsdBoolean", "question": "Are there measures taken to prevent leakage to other lands?", "status": "EXISTS", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf, page 6"}], "requirements": [{"identifier": "improvedForestManagement", "name": "Improved Forest Management", "kind": "CRITERION", "description": "The project must involve improving forest management practices to increase the carbon stock on land by extending the rotation age of a forest or patch of forest before harvesting.", "hasRequirement": [], "hasConcepts": ["forestManagementPractices"], "status": "CREATED", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf, page 4"}, {"identifier": "projectActivityRequirement", "name": "Project Activity Requirement", "kind": "CRITERION", "description": "The project must be an Improved Forest Management (IFM) project activity that involves an extension in rotation age (ERA).", "hasRequirement": [], "hasConcepts": ["projectActivity"], "status": "CREATED", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf, page 5"}, {"identifier": "harvestingTechniquesRequirement", "name": "Harvesting Techniques Requirement", "kind": "CRITERION", "description": "Forest management in both baseline and project scenarios must involve harvesting techniques such as clear cuts, patch cuts, seed trees, continuous thinning, or group selection practices.", "hasRequirement": [], "hasConcepts": ["harvestingTechniques"], "status": "CREATED", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf, page 5"}, {"identifier": "projectAreaCertificationRequirement", "name": "Project Area Certification Requirement", "kind": "CRITERION", "description": "Prior to the first verification event, the project area must be either certified by Forest Stewardship Council (FSC); or subject to an easement, or equivalent instrument, recorded against the deed of property that prohibits commercial harvesting for the duration of the crediting period unless later certified by FSC.", "hasRequirement": [], "hasConcepts": ["projectAreaCertification"], "status": "CREATED", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf, page 5"}, {"identifier": "projectLengthRequirement", "name": "Project Length Requirement", "kind": "CRITERION", "description": "Project proponents must define the minimum project length in the project description.", "hasRequirement": [], "hasConcepts": ["projectLength"], "status": "CREATED", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf, page 5"}, {"identifier": "managementPracticesProjectionRequirement", "name": "Management Practices Projection Requirement", "kind": "CRITERION", "description": "Project proponents must have a projection of management practices in both with- and without-project scenarios.", "hasRequirement": [], "hasConcepts": ["managementPracticesProjection"], "status": "CREATED", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf, page 6"}, {"identifier": "fireControlMeasuresRequirement", "name": "Fire Control Measures Requirement", "kind": "CRITERION", "description": "Where fire is used as part of forest management, fire control measures such as installation of firebreaks or back-burning must be taken to ensure fire does not spread outside the project area \u2014 that is, no biomass burning is permitted to occur beyond the project area due to forest management activities.", "hasRequirement": [], "hasConcepts": ["fireControlMeasures"], "status": "CREATED", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf, page 6"}, {"identifier": "leakagePreventionRequirement", "name": "Leakage Prevention Requirement", "kind": "CRITERION", "description": "There must be no leakage through activity shifting to other lands owned or managed by project proponents outside the boundary of the project area.", "hasRequirement": [], "hasConcepts": ["leakagePrevention"], "status": "CREATED", "source": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf, page 6"}], "document": {"name": "VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf"}}"""
+    iteration = 31
+    cccev = """{"dataUnits":[{"identifier":"kb_31_xsdString","name":"XSDString","description":"Any string of characters","type":"STRING","status":"EXISTS"},{"identifier":"kb_31_xsdBoolean","name":"XSDBoolean","description":"True or false","type":"BOOLEAN","status":"EXISTS"}],"informationConcepts":[{"identifier":"kb_31_forestManagementPractices","name":"Forest Management Practices","description":"The practices used to manage a forest","unit":"kb_31_xsdString","question":"What are the forest management practices used in the project?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 4"},{"identifier":"kb_31_projectType","name":"Project Type","description":"The type of the project","unit":"kb_31_xsdString","question":"What is the type of the project?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_harvestingTechniques","name":"Harvesting Techniques","description":"The harvesting techniques used in the project","unit":"kb_31_xsdString","question":"What are the harvesting techniques used in the project?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_forestCertification","name":"Forest Certification","description":"The certification status of the forest","unit":"kb_31_xsdString","question":"What is the certification status of the forest?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_projectLength","name":"Project Length","description":"The minimum length of the project","unit":"kb_31_xsdString","question":"What is the minimum length of the project?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_peatForestPresence","name":"Peat Forest Presence","description":"Whether the project encompasses managed peat forests","unit":"kb_31_xsdBoolean","question":"Does the project encompass managed peat forests?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"},{"identifier":"kb_31_managementPracticesProjection","name":"Management Practices Projection","description":"The projection of management practices in both with- and without-project scenarios","unit":"kb_31_xsdString","question":"What is the projection of management practices in both with- and without-project scenarios?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"},{"identifier":"kb_31_fireControlMeasures","name":"Fire Control Measures","description":"The fire control measures taken in the project","unit":"kb_31_xsdString","question":"What are the fire control measures taken in the project?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"},{"identifier":"kb_31_leakagePrevention","name":"Leakage Prevention","description":"Whether there is leakage prevention through activity shifting to other lands","unit":"kb_31_xsdBoolean","question":"Is there leakage prevention through activity shifting to other lands?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"}],"requirements":[{"identifier":"kb_31_improveForestManagement","name":"Improve Forest Management","kind":"CRITERION","description":"The project must involve improving forest management practices to increase the carbon stock on land by extending the rotation age of a forest or patch of forest before harvesting.","hasRequirement":[],"hasConcepts":["kb_31_forestManagementPractices"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 4"},{"identifier":"kb_31_ifmProjectActivity","name":"IFM Project Activity","kind":"CRITERION","description":"The project must be an Improved Forest Management (IFM) project activity that involves an extension in rotation age (ERA).","hasRequirement":[],"hasConcepts":["kb_31_projectType"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_harvestingTechniquesRequirement","name":"Harvesting Techniques Requirement","kind":"CRITERION","description":"Forest management in both baseline and project scenarios must involve harvesting techniques such as clear cuts, patch cuts, seed trees, continuous thinning, or group selection practices.","hasRequirement":[],"hasConcepts":["kb_31_harvestingTechniques"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_forestCertificationRequirement","name":"Forest Certification Requirement","kind":"CRITERION","description":"Prior to the first verification event, the project area must be either certified by Forest Stewardship Council (FSC); or subject to an easement, or equivalent instrument, recorded against the deed of property that prohibits commercial harvesting for the duration of the crediting period unless later certified by FSC.","hasRequirement":[],"hasConcepts":["kb_31_forestCertification"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_projectLengthRequirement","name":"Project Length Requirement","kind":"CRITERION","description":"Project proponents must define the minimum project length in the project description.","hasRequirement":[],"hasConcepts":["kb_31_projectLength"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_peatForestPresenceRequirement","name":"Peat Forest Presence Requirement","kind":"CRITERION","description":"The project must not encompass managed peat forests, and the proportion of wetlands is not expected to change as part of the project.","hasRequirement":[],"hasConcepts":["kb_31_peatForestPresence"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"},{"identifier":"kb_31_managementPracticesProjectionRequirement","name":"Management Practices Projection Requirement","kind":"CRITERION","description":"Project proponents must have a projection of management practices in both with- and without-project scenarios.","hasRequirement":[],"hasConcepts":["kb_31_managementPracticesProjection"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"},{"identifier":"kb_31_fireControlMeasuresRequirement","name":"Fire Control Measures Requirement","kind":"CRITERION","description":"Where fire is used as part of forest management, fire control measures such as installation of firebreaks or back-burning must be taken to ensure fire does not spread outside the project area — that is, no biomass burning is permitted to occur beyond the project area due to forest management activities.","hasRequirement":[],"hasConcepts":["kb_31_fireControlMeasures"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"},{"identifier":"kb_31_leakagePreventionRequirement","name":"Leakage Prevention Requirement","kind":"CRITERION","description":"There must be no leakage through activity shifting to other lands owned or managed by project proponents outside the boundary of the project area.","hasRequirement":[],"hasConcepts":["kb_31_leakagePrevention"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"}],"document":{"name":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf"}}"""
     # cccev = extract_cccev(f"{DIR_INPUT}/{FILE_VM003}", iteration, verbose=False)
-    GRAPH.query("match (a) detach delete a")
-    Json2GraphTool(LLM, GRAPH).run({'json_data': cccev})
-    init_graph()
+    # GRAPH.query("match (a) detach delete a")
+    # Json2GraphTool(LLM, GRAPH).run({'json_data': cccev})
+    # GRAPH.query(cccev2graph(json2object(cccev)))
+    # embed_graph()
 
     # init_graph()
     # question = "What requirements must be met by a forest management project? Give me only short names"
@@ -403,5 +372,16 @@ Output Directory: {DIR_OUTPUT}
     # Your final answer should contain every question that can be answered as a bullet list, along with their answer.
     # Text: This 3-year project does not use fire as part of its forest management.
     # """
-    question = """What requirements have been extracted from the document VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf?"""
+    # question = """What requirements have been extracted from the document VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf?"""
+    question = """What requirements have been extracted from the document VM0003?"""
     question_graph(question)
+
+    # html = convert_pdf(
+    #     path=f"{DIR_INPUT}/{FILE_VM003}",
+    #     format="html"
+    # )
+    #
+    # WriteFileTool().run({
+    #     "file_path": f"{DIR_OUTPUT}/vm003.html",
+    #     "text": html
+    # })
