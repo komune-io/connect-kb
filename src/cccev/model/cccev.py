@@ -1,13 +1,7 @@
-import json
 from enum import Enum
 from typing import List
 
-from langchain import PromptTemplate, LLMChain, LLMCheckerChain
-from langchain.chat_models.base import BaseChatModel
-from langchain.output_parsers import PydanticOutputParser
 from langchain.pydantic_v1 import BaseModel, Field
-from langchain.tools import BaseTool
-from langchain_experimental.smart_llm import SmartLLMChain
 from pydantic import validator
 
 DEFINITION_REQUIREMENT = """
@@ -233,118 +227,11 @@ class CCCEV(BaseModel):
         description="The source document from which the other entities have been extracted"
     )
 
-
-CccevParser = PydanticOutputParser(pydantic_object=CCCEV)
-
-
-PROMPT_CCCEV_TASK = """read the given input and parse it.
-The input data will contain a list of pre-filtered requirements, so you should extract every bit of information you can from it.
-All requirements listed in the input should be present in the output.
-Additional details: {detailed_task}
-
-{format_instructions}
-
-All identifiers must be prefixed by "{session_id}"
-
-Input: {unstructured_data}"""
-
-PROMPT_CCCEV_PARSER = f"""
-You are an expert in the specifications CCCEV (which will be described below).
-Your task is to {PROMPT_CCCEV_TASK}
-    """
-
-PROMPT_CCCEV_VERIFIER_BASE = f"""
-You are an expert in the specifications CCCEV (which will be described below).
-Your task is to verify the work of one of your fellow experts.
-Here was the task of the other expert:
-{PROMPT_CCCEV_TASK}
-
-And here is the produced result:
-{{generated_cccev}}
-
-If you identify some points of improvements, apply them and return a new version of the result. 
-Points of improvements can include but are not limited to:
-  - all requirements in the input are represented in the result
-  - relevance of the data unit and information concepts against the requirements that use them
-  - the description of a requirement makes it clear that it is a requirement (with words such as "must" for example)
-  - there are no unused or duplicated information concepts or data units
-  - the data units are all context-agnostic, whereas the information concepts should be put in context
-  - each information concept uses only one data unit
-  - any other improvements you can find
-    """
-PROMPT_CCCEV_VERIFIER = f"""{PROMPT_CCCEV_VERIFIER_BASE}
-The final answer should be the resulting json, and only the json without further formatting (i.e. do NOT wrap with ```json ```)
-"""
-PROMPT_CCCEV_VERIFIER_VERBOSE = f"""{PROMPT_CCCEV_VERIFIER_BASE}
-The final answer should be a json, and only a json without further formatting (i.e. do NOT wrap with ```json ```) with:
-  - `improvements` that is a list of the improvements points you found
-  - `cccev` that is the final improved result
-"""
-
-
-class CccevParserTool(BaseTool):
-    name = "CccevParser"
-    description = "useful for when you need to transform unstructured data to CCCEV (Core Criterion and Core Evidence Vocabulary)"
-
-    llm: BaseChatModel = None
-
-    def __init__(self, llm: BaseChatModel, **data):
-        super().__init__(**data)
-        self.llm = llm
-
-    def _run(self, unstructured_data: str, detailed_task: str, session_id: str) -> str:
-
-        chain = LLMChain(
-            llm=self.llm,
-            prompt=PromptTemplate(
-                template=PROMPT_CCCEV_PARSER,
-                input_variables=["detailed_task", "format_instructions", "unstructured_data", "session_id"]
-            ),
-            verbose=True
+    @staticmethod
+    def empty():
+        return CCCEV(
+            dataUnits=[],
+            informationConcepts=[],
+            requirements=[],
+            document=Document(name="")
         )
-        return chain.run({
-            "detailed_task": detailed_task,
-            "format_instructions": CccevParser.get_format_instructions(),
-            "unstructured_data": unstructured_data,
-            "session_id": session_id
-        })
-
-
-class CccevVerifierTool(BaseTool):
-    name = "CccevVerifier"
-    description = "useful for when you need to check the validity of a generated CCCEV structure and clean it"
-
-    llm: BaseChatModel = None
-
-    def __init__(self, llm: BaseChatModel, **data):
-        super().__init__(**data)
-        self.llm = llm
-
-    def _run(self, generated_cccev: str, unstructured_data: str, detailed_task: str, session_id: str, verbose: bool) -> str:
-        if verbose:
-            prompt = PROMPT_CCCEV_VERIFIER_VERBOSE
-        else:
-            prompt = PROMPT_CCCEV_VERIFIER
-
-        chain = LLMChain(
-            llm=self.llm,
-            prompt=PromptTemplate(
-                template=prompt,
-                input_variables=["detailed_task", "format_instructions", "unstructured_data", "session_id", "generated_cccev"]
-            ),
-            verbose=True
-        )
-        result_str = chain.run({
-            "detailed_task": detailed_task,
-            "format_instructions": CccevParser.get_format_instructions(),
-            "unstructured_data": unstructured_data,
-            "session_id": session_id,
-            "generated_cccev": generated_cccev
-        })
-        print(result_str)
-        result = json.loads(result_str)
-
-        if verbose:
-            return json.dumps(result["cccev"])
-        else:
-            return json.dumps(result)
