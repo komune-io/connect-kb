@@ -46,7 +46,7 @@ Here was the task of the other expert:
 And here is the produced result:
 {{generated_cccev}}
 
-If you identify some points of improvements, apply them and return a new version of the result. 
+If you identify some points of improvements, apply them and return a new version of the result (even if you don't make any change). 
 Points of improvements can include but are not limited to:
   - all requirements in the input are represented in the result
   - relevance of the data unit and information concepts against the requirements that use them

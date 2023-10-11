@@ -29,9 +29,9 @@ class GraphEmbedder:
             RETURN n as content, labels(n) as labels, id(n) as id
         """)
         for node in nodes:
-            self.__embed_node(id=node["id"], label=node["labels"][0], content=node["content"])
+            self.embed_node(id=node["id"], label=node["labels"][0], content=node["content"])
 
-    def __embed_node(self, id: int, label: str, content: dict[str]):
+    def embed_node(self, id: int, label: str, content: dict[str]):
         field_source = "source"
         field_type = "type"
         field_target = "target"
@@ -41,13 +41,13 @@ class GraphEmbedder:
                 RETURN n1 as {field_source}, type(r) as {field_type}, n2 as {field_target}
             """, {"id": id})
 
-        embedded_text = self.__node_to_text(label, content)
+        embedded_text = self.node_to_text(label, content)
 
         for relationship in relationships:
             r_type = relationship[field_type]
             r_source = relationship[field_source]
             r_target: dict[str] = relationship[field_target]
-            embedded_text += f"""\n{self.__relationship_to_text(
+            embedded_text += f"""\n{self.relationship_to_text(
                 type=r_type,
                 node_source=r_source.get("identifier", r_source["name"]),
                 node_target=r_target.get("identifier", r_target["name"])
@@ -65,7 +65,7 @@ class GraphEmbedder:
             """, {"node_id": id, 'embedding': embedding, 'embedded_text': embedded_text})
 
     @staticmethod
-    def __node_to_text(label: str, content: dict[str]) -> str:
+    def node_to_text(label: str, content: dict[str]) -> str:
         if label == "Requirement":
             return f"""{label}
              identifier: {content["identifier"]} 
@@ -90,7 +90,7 @@ class GraphEmbedder:
             print(f"Unsupported label {label}")
 
     @staticmethod
-    def __relationship_to_text(type: str, node_source: str, node_target: str) -> str:
+    def relationship_to_text(type: str, node_source: str, node_target: str) -> str:
         if type == 'HAS_CONCEPT':
             type_txt = "USES_INFORMATION"
         else:
