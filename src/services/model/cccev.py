@@ -99,7 +99,7 @@ class Requirement(BaseModel):
     hasConcepts: List[str] = Field(
         default=...,
         title="hasConcepts",
-        description="Identifiers of the information concepts used by the requirement",
+        description="Identifiers of the information concepts used by the requirement. There must be at least one concept",
     )
     source: int = Field(
         default=...,

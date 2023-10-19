@@ -1,5 +1,6 @@
 import json
 import os
+import time
 
 from dotenv import load_dotenv
 from langchain.agents import AgentType
@@ -8,12 +9,12 @@ from langchain.chat_models import ChatOpenAI, ChatAnthropic
 from langchain.document_loaders import PyPDFium2Loader as PdfReader
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.graphs import Neo4jGraph
-from langchain.tools import WriteFileTool
+from langchain.tools import WriteFileTool, Tool
 
-from cccev.extractor.cccev_extractor import MethodologyEligibilityCccevExtractor, json2object
-from cccev.graph.cccev_repository import CccevRepository
-from cccev.graph.graph_embedder import GraphEmbedder, INDEX_EMBEDDED, PROPERTY_EMBED_TEXT
-from cccev.graph.tool_graph import QuestionGraphTool, QueryGraphTool
+from services.extractor.cccev_extractor import MethodologyEligibilityCccevExtractor
+from services.graph.document_repository import DocumentRepository
+from services.graph.graph_embedder import GraphEmbedder, INDEX_EMBEDDED, PROPERTY_EMBED_TEXT
+from services.graph.tool_graph import QuestionGraphTool, QueryGraphTool
 from cccev.model.cccev import CCCEV
 
 DIR_DATA = "data"
@@ -147,18 +148,50 @@ def disambiguate(node_label: str, iteration: int):
             print(f"""No duplication for {node["identifier"]}""")
 
 
+def tool_question(question: str):
+    vector = EMBEDDER.embed_query(question)
+    return "\n".join(DocumentRepository(GRAPH).find_similar_chunks([f"{DIR_INPUT}/{FILE_VM003}"], vector, 5))
+
+
 if __name__ == '__main__':
     if not os.path.exists(DIR_OUTPUT):
         os.makedirs(DIR_OUTPUT)
 
-    iteration = 37
+    iteration = 39
     # cccev = """{"dataUnits":[{"identifier":"kb_31_xsdString","name":"XSDString","description":"Any string of characters","type":"STRING","status":"EXISTS"},{"identifier":"kb_31_xsdBoolean","name":"XSDBoolean","description":"True or false","type":"BOOLEAN","status":"EXISTS"}],"informationConcepts":[{"identifier":"kb_31_forestManagementPractices","name":"Forest Management Practices","description":"The practices used to manage a forest","unit":"kb_31_xsdString","question":"What are the forest management practices used in the project?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 4"},{"identifier":"kb_31_projectType","name":"Project Type","description":"The type of the project","unit":"kb_31_xsdString","question":"What is the type of the project?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_harvestingTechniques","name":"Harvesting Techniques","description":"The harvesting techniques used in the project","unit":"kb_31_xsdString","question":"What are the harvesting techniques used in the project?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_forestCertification","name":"Forest Certification","description":"The certification status of the forest","unit":"kb_31_xsdString","question":"What is the certification status of the forest?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_projectLength","name":"Project Length","description":"The minimum length of the project","unit":"kb_31_xsdString","question":"What is the minimum length of the project?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_peatForestPresence","name":"Peat Forest Presence","description":"Whether the project encompasses managed peat forests","unit":"kb_31_xsdBoolean","question":"Does the project encompass managed peat forests?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"},{"identifier":"kb_31_managementPracticesProjection","name":"Management Practices Projection","description":"The projection of management practices in both with- and without-project scenarios","unit":"kb_31_xsdString","question":"What is the projection of management practices in both with- and without-project scenarios?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"},{"identifier":"kb_31_fireControlMeasures","name":"Fire Control Measures","description":"The fire control measures taken in the project","unit":"kb_31_xsdString","question":"What are the fire control measures taken in the project?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"},{"identifier":"kb_31_leakagePrevention","name":"Leakage Prevention","description":"Whether there is leakage prevention through activity shifting to other lands","unit":"kb_31_xsdBoolean","question":"Is there leakage prevention through activity shifting to other lands?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"}],"requirements":[{"identifier":"kb_31_improveForestManagement","name":"Improve Forest Management","kind":"CRITERION","description":"The project must involve improving forest management practices to increase the carbon stock on land by extending the rotation age of a forest or patch of forest before harvesting.","hasRequirement":[],"hasConcepts":["kb_31_forestManagementPractices"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 4"},{"identifier":"kb_31_ifmProjectActivity","name":"IFM Project Activity","kind":"CRITERION","description":"The project must be an Improved Forest Management (IFM) project activity that involves an extension in rotation age (ERA).","hasRequirement":[],"hasConcepts":["kb_31_projectType"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_harvestingTechniquesRequirement","name":"Harvesting Techniques Requirement","kind":"CRITERION","description":"Forest management in both baseline and project scenarios must involve harvesting techniques such as clear cuts, patch cuts, seed trees, continuous thinning, or group selection practices.","hasRequirement":[],"hasConcepts":["kb_31_harvestingTechniques"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_forestCertificationRequirement","name":"Forest Certification Requirement","kind":"CRITERION","description":"Prior to the first verification event, the project area must be either certified by Forest Stewardship Council (FSC); or subject to an easement, or equivalent instrument, recorded against the deed of property that prohibits commercial harvesting for the duration of the crediting period unless later certified by FSC.","hasRequirement":[],"hasConcepts":["kb_31_forestCertification"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_projectLengthRequirement","name":"Project Length Requirement","kind":"CRITERION","description":"Project proponents must define the minimum project length in the project description.","hasRequirement":[],"hasConcepts":["kb_31_projectLength"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_peatForestPresenceRequirement","name":"Peat Forest Presence Requirement","kind":"CRITERION","description":"The project must not encompass managed peat forests, and the proportion of wetlands is not expected to change as part of the project.","hasRequirement":[],"hasConcepts":["kb_31_peatForestPresence"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"},{"identifier":"kb_31_managementPracticesProjectionRequirement","name":"Management Practices Projection Requirement","kind":"CRITERION","description":"Project proponents must have a projection of management practices in both with- and without-project scenarios.","hasRequirement":[],"hasConcepts":["kb_31_managementPracticesProjection"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"},{"identifier":"kb_31_fireControlMeasuresRequirement","name":"Fire Control Measures Requirement","kind":"CRITERION","description":"Where fire is used as part of forest management, fire control measures such as installation of firebreaks or back-burning must be taken to ensure fire does not spread outside the project area — that is, no biomass burning is permitted to occur beyond the project area due to forest management activities.","hasRequirement":[],"hasConcepts":["kb_31_fireControlMeasures"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"},{"identifier":"kb_31_leakagePreventionRequirement","name":"Leakage Prevention Requirement","kind":"CRITERION","description":"There must be no leakage through activity shifting to other lands owned or managed by project proponents outside the boundary of the project area.","hasRequirement":[],"hasConcepts":["kb_31_leakagePrevention"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"}],"document":{"name":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf"}}"""
-    cccev = extract_cccev(f"{DIR_INPUT}/{FILE_VM003}", iteration)
-    if len(cccev.requirements) > 0:
-        CccevRepository(graph=GRAPH).save(cccev)
-        disambiguate("DataUnit", iteration)
-        disambiguate("InformationConcept", iteration)
-        GraphEmbedder(embedder=EMBEDDER, graph=GRAPH).embed_graph()
+    # cccev = extract_cccev(f"{DIR_INPUT}/{FILE_VM003}", iteration)
+    # if len(cccev.requirements) > 0:
+    #     CccevRepository(graph=GRAPH).save(cccev)
+    #     disambiguate("DataUnit", iteration)
+    #     disambiguate("InformationConcept", iteration)
+    #     GraphEmbedder(embedder=EMBEDDER, graph=GRAPH).embed_graph()
+
+    # reader = PdfReader(f"{DIR_INPUT}/{FILE_VM003}")
+    # file_content = '\n'.join(map(lambda page: page.page_content, reader.load()))
+    # trace = []
+    # DocumentRepository(GRAPH).save(FILE_VM003, file_content, f"{DIR_INPUT}/{FILE_VM003}", {"iteration": iteration}, trace)
+    # print(trace)
+    # GraphEmbedder(embedder=EMBEDDER, graph=GRAPH).embed_graph()
+
+    # vector = GRAPH.query("""
+    #     MATCH (chunk:DocumentChunk)
+    #     WITH chunk, rand() as r
+    #     RETURN chunk.embedVector as vector
+    #     ORDER BY r
+    #     LIMIT 1
+    # """)[0]["vector"]
+
+    question = "What is the baseline scenario of this methodology?"
+    # vector = EMBEDDER.embed_query(question)
+    #
+    # chunks = DocumentRepository(GRAPH).find_similar_chunks([f"{DIR_INPUT}/{FILE_VM003}"], vector, 5)
+    #
+    # answer = LLM.predict(f"""Answer the following question using the provided context. If you can't answer from the context, just say that you don't know.
+    # After you answer the question, provide the raw text sources (not the identifiers).
+    # Question: {question}
+    # Context: {chunks}
+    # """)
+
 
     # init_graph()
     # question = "What requirements must be met by a forest management project? Give me only short names"

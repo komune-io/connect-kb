@@ -1,8 +1,9 @@
 import uuid
 
+from services.model.cccev import CCCEV
 from langchain.graphs import Neo4jGraph
 
-from cccev.model.cccev import CCCEV
+from .schema import LABEL_DATA_UNIT, LABEL_INFORMATION_CONCEPT, LABEL_REQUIREMENT, LABEL_DOCUMENT
 
 
 class CccevRepository:
@@ -14,10 +15,10 @@ class CccevRepository:
 
     def save(self, cccev: CCCEV):
         doc = "doc"
-        command = f"""CREATE ({doc}:Document {{id: "{uuid.uuid4()}", name: "{cccev.document.name}"}})\n"""
+        command = f"""CREATE ({doc}:{LABEL_DOCUMENT} {{id: "{uuid.uuid4()}", name: "{cccev.document.name}"}})\n"""
 
         for unit in cccev.dataUnits:
-            command += f"""CREATE ({unit.identifier}:DataUnit {{
+            command += f"""CREATE ({unit.identifier}:{LABEL_DATA_UNIT} {{
                 id: "{uuid.uuid4()}",
                 identifier: "{unit.identifier}",
                 name: "{unit.name}",
@@ -28,7 +29,7 @@ class CccevRepository:
             """
 
         for concept in cccev.informationConcepts:
-            command += f"""CREATE ({concept.identifier}:InformationConcept {{
+            command += f"""CREATE ({concept.identifier}:{LABEL_INFORMATION_CONCEPT} {{
                 id: "{uuid.uuid4()}",
                 identifier: "{concept.identifier}",
                 name: "{concept.name}",
@@ -42,7 +43,7 @@ class CccevRepository:
             """
 
         for requirement in cccev.requirements:
-            command += f"""CREATE ({requirement.identifier}:Requirement {{
+            command += f"""CREATE ({requirement.identifier}:{LABEL_REQUIREMENT} {{
                 id: "{uuid.uuid4()}",
                 identifier: "{requirement.identifier}",
                 name: "{requirement.name}",

@@ -5,7 +5,7 @@ from langchain.graphs import Neo4jGraph
 from langchain.schema.embeddings import Embeddings
 from langchain.tools import BaseTool
 
-from cccev.graph.graph_embedder import INDEX_EMBEDDED, PROPERTY_EMBED_TEXT
+from .schema import INDEX_EMBEDDED_NODE, PROPERTY_EMBED_TEXT
 
 
 class QuestionGraphTool(BaseTool):
@@ -23,7 +23,7 @@ class QuestionGraphTool(BaseTool):
     def _run(self, question: str):
         question_embedding = self.embedder.embed_query(question)
         answer_context_parts = self.graph.query(f"""
-            CALL db.index.vector.queryNodes('{INDEX_EMBEDDED}', 50, $question_embedding) 
+            CALL db.index.vector.queryNodes('{INDEX_EMBEDDED_NODE}', 50, $question_embedding) 
             YIELD node, score
             RETURN node.{PROPERTY_EMBED_TEXT} AS text, score
         """, {"question_embedding": question_embedding})

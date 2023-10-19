@@ -5,7 +5,7 @@ from langchain import PromptTemplate, LLMChain
 from langchain.chat_models.base import BaseChatModel
 from langchain.output_parsers import PydanticOutputParser
 
-from cccev.model.cccev import CCCEV
+from services.model.cccev import CCCEV
 
 CccevParser = PydanticOutputParser(pydantic_object=CCCEV)
 
@@ -28,7 +28,7 @@ Additional details: {detailed_task}
 {format_instructions}
 
 All identifiers must be prefixed by "{session_id}"
-The final answer should be the resulting json, and only the json without further formatting (i.e. do NOT wrap with ```json ```)
+The final answer should be the resulting json, and only the json without further formatting
 
 Input: {unstructured_data}"""
 
@@ -48,20 +48,20 @@ And here is the produced result:
 
 If you identify some points of improvements, apply them and return a new version of the result (even if you don't make any change). 
 Points of improvements can include but are not limited to:
-  - all requirements in the input are represented in the result
-  - relevance of the data unit and information concepts against the requirements that use them
+  - all requirements in the input must be represented in the result
+  - all requirements must use at least one information concept
+  - all concepts used by a requirement must be relevant to it
   - the description of a requirement makes it clear that it is a requirement (with words such as "must" for example)
   - there are no unused or duplicated information concepts or data units
   - the data units are all context-agnostic, whereas the information concepts should be put in context
   - each information concept uses only one data unit
-  - all requirements must use at least one information concept that is relevant to it
   - any other improvements you can find
     """
 PROMPT_CCCEV_VERIFIER = f"""{PROMPT_CCCEV_VERIFIER_BASE}
-The final answer should be the resulting json, and only the json without further formatting (i.e. do NOT wrap with ```json ```)
+The final answer should be the resulting json, and only the json without further formatting
 """
 PROMPT_CCCEV_VERIFIER_DEBUG = f"""{PROMPT_CCCEV_VERIFIER_BASE}
-The final answer should be a json, and only a json without further formatting (i.e. do NOT wrap with ```json ```) with:
+The final answer should be a json, and only a json without further formatting with:
   - `improvements` that is a list of the improvements points you found
   - `cccev` that is the final improved result
 """
@@ -142,7 +142,8 @@ class CccevExtractor:
             print(cccev2)
 
         params["generated_cccev"] = cccev2
-        result_str = chain_verifier.run(params)
+        result_raw: str = chain_verifier.run(params)
+        result_str = result_raw[result_raw.find("{"):result_raw.rfind("}")+1]
 
         print(result_str)
 
@@ -155,5 +156,6 @@ class CccevExtractor:
 
 class MethodologyEligibilityCccevExtractor(CccevExtractor):
     def __init__(self, llm: BaseChatModel, **data):
-        task_details = "extract the CCCEV entities that must be fulfilled for a project to be eligible to this methodology"
+        # task_details = "extract the CCCEV entities that must be fulfilled for a project to be eligible to this methodology"
+        task_details = "None"
         super().__init__(llm, task_details, **data)
