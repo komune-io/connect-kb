@@ -1,6 +1,6 @@
 import json
 import os
-import time
+from dataclasses import asdict
 
 from dotenv import load_dotenv
 from langchain.agents import AgentType
@@ -9,13 +9,14 @@ from langchain.chat_models import ChatOpenAI, ChatAnthropic
 from langchain.document_loaders import PyPDFium2Loader as PdfReader
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.graphs import Neo4jGraph
-from langchain.tools import WriteFileTool, Tool
+from langchain.tools import WriteFileTool
 
 from services.extractor.cccev_extractor import MethodologyEligibilityCccevExtractor
+from services.graph.cccev_repository import CccevRepository
 from services.graph.document_repository import DocumentRepository
 from services.graph.graph_embedder import GraphEmbedder, INDEX_EMBEDDED, PROPERTY_EMBED_TEXT
 from services.graph.tool_graph import QuestionGraphTool, QueryGraphTool
-from cccev.model.cccev import CCCEV
+from services.model.cccev import Cccev
 
 DIR_DATA = "data"
 DIR_OUTPUT = f"{DIR_DATA}/output"
@@ -74,10 +75,10 @@ def question_graph(question: str) -> str:
 
 
 def compute_session_id(iteration: int) -> str:
-    return f"kb_{iteration}_"
+    return f"kb_{iteration}"
 
 
-def extract_cccev(input_file_path: str, iteration: int) -> CCCEV:
+def extract_cccev(input_file_path: str, iteration: int) -> Cccev:
     reader = PdfReader(input_file_path)
     pages = reader.load()
     text = f"""
@@ -91,12 +92,13 @@ Page 6: {pages[6 - 1].page_content}
 
     cccev = MethodologyEligibilityCccevExtractor(LLM).extract(
         text=text,
-        session_id=compute_session_id(iteration)
+        session_id=compute_session_id(iteration),
+        debug=True
     )
 
     WriteFileTool().run({
         "file_path": f"{DIR_OUTPUT}/result-cccev-parser-{iteration}.json",
-        "text": json.dumps(cccev, default=lambda o: o.__dict__)
+        "text": json.dumps(asdict(cccev))
     })
     return cccev
 
@@ -157,14 +159,14 @@ if __name__ == '__main__':
     if not os.path.exists(DIR_OUTPUT):
         os.makedirs(DIR_OUTPUT)
 
-    iteration = 39
-    # cccev = """{"dataUnits":[{"identifier":"kb_31_xsdString","name":"XSDString","description":"Any string of characters","type":"STRING","status":"EXISTS"},{"identifier":"kb_31_xsdBoolean","name":"XSDBoolean","description":"True or false","type":"BOOLEAN","status":"EXISTS"}],"informationConcepts":[{"identifier":"kb_31_forestManagementPractices","name":"Forest Management Practices","description":"The practices used to manage a forest","unit":"kb_31_xsdString","question":"What are the forest management practices used in the project?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 4"},{"identifier":"kb_31_projectType","name":"Project Type","description":"The type of the project","unit":"kb_31_xsdString","question":"What is the type of the project?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_harvestingTechniques","name":"Harvesting Techniques","description":"The harvesting techniques used in the project","unit":"kb_31_xsdString","question":"What are the harvesting techniques used in the project?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_forestCertification","name":"Forest Certification","description":"The certification status of the forest","unit":"kb_31_xsdString","question":"What is the certification status of the forest?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_projectLength","name":"Project Length","description":"The minimum length of the project","unit":"kb_31_xsdString","question":"What is the minimum length of the project?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_peatForestPresence","name":"Peat Forest Presence","description":"Whether the project encompasses managed peat forests","unit":"kb_31_xsdBoolean","question":"Does the project encompass managed peat forests?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"},{"identifier":"kb_31_managementPracticesProjection","name":"Management Practices Projection","description":"The projection of management practices in both with- and without-project scenarios","unit":"kb_31_xsdString","question":"What is the projection of management practices in both with- and without-project scenarios?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"},{"identifier":"kb_31_fireControlMeasures","name":"Fire Control Measures","description":"The fire control measures taken in the project","unit":"kb_31_xsdString","question":"What are the fire control measures taken in the project?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"},{"identifier":"kb_31_leakagePrevention","name":"Leakage Prevention","description":"Whether there is leakage prevention through activity shifting to other lands","unit":"kb_31_xsdBoolean","question":"Is there leakage prevention through activity shifting to other lands?","status":"EXISTS","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"}],"requirements":[{"identifier":"kb_31_improveForestManagement","name":"Improve Forest Management","kind":"CRITERION","description":"The project must involve improving forest management practices to increase the carbon stock on land by extending the rotation age of a forest or patch of forest before harvesting.","hasRequirement":[],"hasConcepts":["kb_31_forestManagementPractices"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 4"},{"identifier":"kb_31_ifmProjectActivity","name":"IFM Project Activity","kind":"CRITERION","description":"The project must be an Improved Forest Management (IFM) project activity that involves an extension in rotation age (ERA).","hasRequirement":[],"hasConcepts":["kb_31_projectType"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_harvestingTechniquesRequirement","name":"Harvesting Techniques Requirement","kind":"CRITERION","description":"Forest management in both baseline and project scenarios must involve harvesting techniques such as clear cuts, patch cuts, seed trees, continuous thinning, or group selection practices.","hasRequirement":[],"hasConcepts":["kb_31_harvestingTechniques"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_forestCertificationRequirement","name":"Forest Certification Requirement","kind":"CRITERION","description":"Prior to the first verification event, the project area must be either certified by Forest Stewardship Council (FSC); or subject to an easement, or equivalent instrument, recorded against the deed of property that prohibits commercial harvesting for the duration of the crediting period unless later certified by FSC.","hasRequirement":[],"hasConcepts":["kb_31_forestCertification"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_projectLengthRequirement","name":"Project Length Requirement","kind":"CRITERION","description":"Project proponents must define the minimum project length in the project description.","hasRequirement":[],"hasConcepts":["kb_31_projectLength"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 5"},{"identifier":"kb_31_peatForestPresenceRequirement","name":"Peat Forest Presence Requirement","kind":"CRITERION","description":"The project must not encompass managed peat forests, and the proportion of wetlands is not expected to change as part of the project.","hasRequirement":[],"hasConcepts":["kb_31_peatForestPresence"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"},{"identifier":"kb_31_managementPracticesProjectionRequirement","name":"Management Practices Projection Requirement","kind":"CRITERION","description":"Project proponents must have a projection of management practices in both with- and without-project scenarios.","hasRequirement":[],"hasConcepts":["kb_31_managementPracticesProjection"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"},{"identifier":"kb_31_fireControlMeasuresRequirement","name":"Fire Control Measures Requirement","kind":"CRITERION","description":"Where fire is used as part of forest management, fire control measures such as installation of firebreaks or back-burning must be taken to ensure fire does not spread outside the project area — that is, no biomass burning is permitted to occur beyond the project area due to forest management activities.","hasRequirement":[],"hasConcepts":["kb_31_fireControlMeasures"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"},{"identifier":"kb_31_leakagePreventionRequirement","name":"Leakage Prevention Requirement","kind":"CRITERION","description":"There must be no leakage through activity shifting to other lands owned or managed by project proponents outside the boundary of the project area.","hasRequirement":[],"hasConcepts":["kb_31_leakagePrevention"],"status":"CREATED","source":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf - Page 6"}],"document":{"name":"VM0003-IFM-Through-Extension-Of-Rotation-Age-v1.3.pdf"}}"""
-    # cccev = extract_cccev(f"{DIR_INPUT}/{FILE_VM003}", iteration)
-    # if len(cccev.requirements) > 0:
-    #     CccevRepository(graph=GRAPH).save(cccev)
+    iteration = 42
+    document_path = f"{DIR_INPUT}/{FILE_VM003}"
+    cccev = extract_cccev(document_path, iteration)
+    if len(cccev.requirements) > 0:
+        CccevRepository(graph=GRAPH).save(cccev, document_path)
     #     disambiguate("DataUnit", iteration)
     #     disambiguate("InformationConcept", iteration)
-    #     GraphEmbedder(embedder=EMBEDDER, graph=GRAPH).embed_graph()
+        GraphEmbedder(embedder=EMBEDDER, graph=GRAPH).embed_graph()
 
     # reader = PdfReader(f"{DIR_INPUT}/{FILE_VM003}")
     # file_content = '\n'.join(map(lambda page: page.page_content, reader.load()))

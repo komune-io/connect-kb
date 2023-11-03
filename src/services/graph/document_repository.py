@@ -87,5 +87,5 @@ class DocumentRepository:
             {metadata_str}
             {PROPERTY_EMBED_TEXT}: $text_{chunk_identifier}
         }})
-        CREATE ({chunk_identifier})-[:IS_SOURCED_BY]->({doc_identifier})
+        CREATE ({chunk_identifier})-[:EXTRACTED_FROM]->({doc_identifier})
         """
