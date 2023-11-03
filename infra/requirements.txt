@@ -17,7 +17,7 @@ anthropic==0.3.11
 # chromadb
 numpy
 altair==4
-tiktoken
+tiktoken==0.5.1
 
 neo4j==5.12.0
 

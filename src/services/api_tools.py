@@ -29,13 +29,21 @@ Helpful answer:
 QA_PROMPT = PromptTemplate(template=qa_template, input_variables=["question", "context"])
 
 
-def get_model_name():
-    model_name = os.getenv('OPENAI_MODEL_NAME')
+def get_chat_model_name():
+    model_name = os.getenv('OPENAI_MODEL_NAME_CHAT')
     if model_name is None:
         model_name = 'gpt-3.5-turbo-16k'
 
-    print(model_name)
+    print(f"chat: {model_name}")
+    return model_name
 
+
+def get_extraction_model_name():
+    model_name = os.getenv('OPENAI_MODEL_NAME_EXTRACTION')
+    if model_name is None:
+        model_name = 'gpt-4'
+
+    print(f"extraction: {model_name}")
     return model_name
 
 
