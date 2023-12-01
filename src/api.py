@@ -1,15 +1,39 @@
 import json
+import time
+from dataclasses import asdict
 from io import BytesIO
 
-from flask import Flask, flash, request, redirect, Response
+from dotenv import load_dotenv
+from flask import Flask, request, Response
 from flask_cors import CORS, cross_origin
+from langchain.chat_models import ChatOpenAI
+from langchain.embeddings import OpenAIEmbeddings
+from langchain.graphs import Neo4jGraph
 from waitress import serve
 
-import api_tools
+from services.api_tools import get_chat_model_name, get_pdf_text, get_extraction_model_name
+from services.chat.conversation_chain import ConversationChainBuilder
+from services.extractor.cccev_extractor import CccevExtractor, MethodologyEligibilityCccevExtractor
+from services.extractor.pdf_splitter import PdfSplitter
+from services.graph.cccev_repository import CccevRepository
+from services.graph.document_repository import DocumentRepository
+from services.graph.graph_embedder import GraphEmbedder
+
+load_dotenv()
 
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif'}
 app = Flask(__name__)
 CORS(app)
+
+LLM_CHAT = ChatOpenAI(temperature=0, model_name=get_chat_model_name())
+LLM_EXTRACTION = ChatOpenAI(temperature=0, model_name=get_extraction_model_name())
+EMBEDDER = OpenAIEmbeddings()
+
+GRAPH = Neo4jGraph(url="neo4j://localhost:7687", username="neo4j", password="smartbsmartb")
+DOCUMENT_REPOSITORY = DocumentRepository(GRAPH)
+GRAPH_EMBEDDER = GraphEmbedder(embedder=EMBEDDER, graph=GRAPH)
+
+CONVERSATION_CHAIN_BUILDER = ConversationChainBuilder(llm=LLM_CHAT, embedder=EMBEDDER, document_repository=DOCUMENT_REPOSITORY)
 
 
 def allowed_file(filename):
@@ -17,99 +41,114 @@ def allowed_file(filename):
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-@app.route('/', methods=['GET', 'POST'])
+@app.route('/', methods=['POST'])
 @cross_origin()
 def upload_file():
-    if request.method == 'POST':
-        # check if the post request has the file part
-        if 'file' not in request.files:
-            flash('No file part')
-            return redirect(request.url)
+    # check if the post request has the file part
+    if 'file' not in request.files:
+        print("No file part")
+        return Response("Missing `file` part", mimetype='text/plain', status=400)
+    file = request.files['file']
 
-        file = request.files['file']
+    if 'path' not in request.form:
+        print("No path provided")
+        return Response("Missing `path` part", mimetype='text/plain', status=400)
+    file_path = request.form["path"]
 
-        # workaround: flask request.files['files'].filename fail on spaces
-        filename = ''.join(str(request.files['file'].headers).split("filename=")[1].split("\r")[0]).replace('"', '')
+    # workaround: flask request.files['files'].filename fail on spaces
+    filename = ''.join(str(file.headers).split("filename=")[1].split("\r")[0]).replace('"', '')
+    if filename == '':
+        filename = file_path.split('/')[-1]
 
-        file_trace = []
-        file_status = 500
+    file_trace = [filename]
 
-        file_trace.append(filename)
-
-        collection = vectorstore._collection
-        existing_chunks_len = len(collection.get(where={"source": filename})['documents'])
-        if existing_chunks_len > 0:
-            collection.delete(where={"source": filename})
-            file_trace.append(str(existing_chunks_len) + " existing chunks deleted")
-
-        file_metadata = {"source": filename}
-        if 'metadata' in request.form:
-            file_metadata.update(json.loads(request.form['metadata']))
-
-        # If the user does not select a file, the browser submits an
-        # empty file without a filename.
-        if filename == '':
-            flash('No selected file')
-            return redirect(request.url)
-
-        if file and allowed_file(filename):
-            print("file found")
-
-            file_content = BytesIO(file.read())
-
-            raw_text = api_tools.get_pdf_text(file_content)
-
-            # get the text chunks
-            text_chunks = api_tools.get_text_chunks(raw_text)
-
-            # create vector store
-            metadata = []
-            for _ in text_chunks:
-                metadata.append(file_metadata.copy())
-            vectorstore.add_texts(text_chunks, metadata)
-            file_trace.append(str(len(text_chunks)) + " chunks vectorized")
-            vectorstore.persist()
-            file_status = 200
-        else:
-            file_trace.append("file not allowed")
-            file_status = 400
-
+    if not file or not allowed_file(filename):
+        file_trace.append(f"file not allowed (not in {ALLOWED_EXTENSIONS})")
         print(file_trace)
-        return Response(str(file_trace), mimetype='text/plain', status=file_status)
-    return '''
-    <!doctype html>
-    <title>Upload new File</title>
-    <h1>Upload new File</h1>
-    <form method=post enctype=multipart/form-data>
-      <input type=file name=file>
-      <input type=submit value=Upload>
-    </form>
-    '''
+        return Response(str(file_trace), mimetype='text/plain', status=400)
+
+    file_metadata = {}
+    if 'metadata' in request.form:
+        file_metadata.update(json.loads(request.form['metadata']))
+
+    file_content = BytesIO(file.read())
+    raw_text = get_pdf_text(file_content)
+
+    doc_identifier = DOCUMENT_REPOSITORY.save(filename, raw_text, request.form["path"], file_metadata, file_trace)
+    GRAPH_EMBEDDER.embed_document(doc_identifier)
+
+    print(file_trace)
+    return Response(str(file_trace), mimetype='text/plain', status=200)
 
 
 @app.route('/ask', methods=['POST'])
 @cross_origin()
 def ask():
-    metadata_filter = {}
-    if 'metadata' in request.json:
-        metadata = request.json["metadata"]
-        if 'targeted_files' in metadata:
-            filenames = metadata['targeted_files']
-            if len(filenames) == 1:
-                metadata_filter = {"filter": {"source": filenames[0]}}
-            elif len(filenames) > 1:
-                sources = []
-                for filename in filenames:
-                    sources.append({"source": filename})
-                metadata_filter = {"filter": {"$or": sources}}
+    if "question" not in request.json:
+        print("No question param")
+        return Response("Missing `question` param", mimetype='text/plain', status=400)
 
-    print("metadata_filter:", metadata_filter)
-    response = api_tools.get_conversation_chain(vectorstore, metadata_filter, request.json["messages"])(
-        {'question': request.json["question"]})
+    if "targeted_files" not in request.json:
+        print("No targeted_files param")
+        return Response("Missing `targeted_files` param", mimetype='text/plain', status=400)
+
+    if "messages" not in request.json:
+        print("No messages param")
+        return Response("Missing `messages` param", mimetype='text/plain', status=400)
+
+    question = request.json["question"]
+    file_paths: [str] = request.json["targeted_files"]
+    messages = request.json["messages"]
+    print("ask:", question, file_paths)
+
+    chain = CONVERSATION_CHAIN_BUILDER.get_conversation_chain(file_paths, messages)
+    response = chain({'question': question})
     return Response(response['answer'], mimetype='text/plain', status=200)
 
 
-vectorstore = api_tools.get_vectorstore()
+@app.route('/cccevExtract', methods=['POST'])
+@cross_origin()
+def cccev_extract():
+    if 'file' not in request.files:
+        print("No file part")
+        return Response("Missing `file` part", mimetype='text/plain', status=400)
+    file = request.files['file']
+
+    if 'path' not in request.form:
+        print("No path provided")
+        return Response("Missing `path` part", mimetype='text/plain', status=400)
+    file_path = request.form["path"]
+
+    if 'type' not in request.form:
+        print("No extraction type provided")
+        return Response("Missing `type` part", mimetype='text/plain', status=400)
+    extraction_type = request.form["type"]
+
+    first_page = int(request.form.get("first_page", 1))
+    last_page = int(request.form.get("last_page", 9999))
+
+    extractor: CccevExtractor
+    if extraction_type == "METHODOLOGY_ELIGIBILITY":
+        extractor = MethodologyEligibilityCccevExtractor(LLM_EXTRACTION)
+    else:
+        return Response("Invalid extraction type", mimetype='text/plain', status=400)
+
+    file_content = BytesIO(file.read())
+    pdf_page_groups = PdfSplitter(token_limit=7500, llm_model_name=get_extraction_model_name())\
+        .group_pages(file_content=file_content, from_page=first_page, to_page=last_page)
+
+    session_id = f"kb_{time.time_ns()}"
+    group_idx = 0
+    for text in pdf_page_groups:
+        cccev = extractor.extract(text, f"{session_id}_{group_idx}")
+        if len(cccev.requirements) > 0:
+            CccevRepository(graph=GRAPH).save(cccev, file_path)
+            print(json.dumps(asdict(cccev)))
+        group_idx += 1
+
+    GraphEmbedder(embedder=EMBEDDER, graph=GRAPH).embed_graph()
+    return Response("Extraction done.", mimetype='text/plain', status=200)
+
 
 if __name__ == '__main__':
     serve(app, host="0.0.0.0", port=9999)
